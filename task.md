@@ -78,7 +78,7 @@ Currently we evaluate tracking by visual inspection of output videos. This doesn
 
 ### 2.3 — Tracking output in MOTChallenge format (~1 day)
 
-- [ ] **Modify `track_video_predict.py` to output MOTChallenge-format text alongside the video**
+- [x] **Modify `track_video_predict.py` to output MOTChallenge-format text alongside the video**
 
   Currently the script only writes annotated mp4 video. Add a `--save-mot` flag that also writes a `.txt` file per clip in MOTChallenge format:
 
@@ -96,7 +96,7 @@ Currently we evaluate tracking by visual inspection of output videos. This doesn
 
 ### 2.4 — Evaluation script using TrackEval (~3 days)
 
-- [ ] **Integrate TrackEval for automated metric computation**
+- [x] **Integrate TrackEval for automated metric computation**
 
   Use the [TrackEval](https://github.com/JonathonLuiten/TrackEval) library (or `py-motmetrics`) to compute MOTA, IDF1, HOTA, ID switches, fragmentation from the MOT-format outputs against ground truth.
 
