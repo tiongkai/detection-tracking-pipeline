@@ -1,0 +1,11 @@
+experiment_name: yolo11n_smoketest
+model: yolo11
+size: n
+split: split_v1_baseline
+imgsz: 640
+epochs: 2
+batch_size: 16
+device: "0"
+freeze_backbone: false
+grad_accum_steps: 1
+notes: "2-epoch smoke test — verify pipeline end-to-end before full runs"

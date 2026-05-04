@@ -1,0 +1,57 @@
+# split_v3_relabeled.yaml
+# Standardised 12-class taxonomy with thermal/rgb domain suffixes.
+# Tests: (a) whether thermal augments with correct labels improve thermal detection
+#        (b) whether dark augments improve poor-lighting RGB detection
+#
+# Thermal augment variants (_aug_gray, _aug_gray_inv, _aug_hot, _aug_drop)
+#   → relabeled to thermal counterpart class
+# Dark augment variants (_aug_dark) + original images
+#   → relabeled to standardised RGB class (base_remap only)
+#
+# head-thermal / torso-thermal are synthetic-only (no real thermal GT for parts).
+# Evaluated qualitatively on val; measurable on test via other thermal classes.
+
+source_split: split_v1_baseline
+split_name: split_v1_v3_relabeled
+
+classes:
+  - boat-rgb            # 0
+  - vessel-rgb          # 1
+  - human-rgb           # 2
+  - outboard motor-rgb  # 3
+  - head-rgb            # 4  (renamed from 'human head')
+  - torso-rgb           # 5  (renamed from 'human torso')
+  - boat-thermal        # 6  (renamed from 'boat')
+  - vessel-thermal      # 7  (renamed from 'vessel')
+  - human-thermal       # 8  (renamed from 'human')
+  - outboard motor-thermal  # 9  (renamed from 'outboard motor')
+  - head-thermal        # 10 (synthetic only — thermal aug of head-rgb images)
+  - torso-thermal       # 11 (synthetic only — thermal aug of torso-rgb images)
+
+# Maps data10 class IDs → v3 class IDs.
+# Applied to: original images + dark augment variants.
+# data10 order: boat-rgb(0), human head(1), human torso(2), outboard motor-rgb(3),
+#               boat(4), human(5), outboard motor(6), human-rgb(7), vessel(8), vessel-rgb(9)
+base_remap:
+  0: 0   # boat-rgb         → boat-rgb
+  1: 4   # human head       → head-rgb
+  2: 5   # human torso      → torso-rgb
+  3: 3   # outboard motor-rgb → outboard motor-rgb
+  4: 6   # boat             → boat-thermal
+  5: 8   # human            → human-thermal
+  6: 9   # outboard motor   → outboard motor-thermal
+  7: 2   # human-rgb        → human-rgb
+  8: 7   # vessel           → vessel-thermal
+  9: 1   # vessel-rgb       → vessel-rgb
+
+# Additional remap applied on top of base_remap for thermal augment variants only.
+# Maps the v3 (base-remapped) class ID → thermal counterpart.
+# RGB classes get their thermal equivalent; thermal classes stay unchanged.
+thermal_remap:
+  0: 6    # boat-rgb         → boat-thermal
+  1: 7    # vessel-rgb       → vessel-thermal
+  2: 8    # human-rgb        → human-thermal
+  3: 9    # outboard motor-rgb → outboard motor-thermal
+  4: 10   # head-rgb         → head-thermal
+  5: 11   # torso-rgb        → torso-thermal
+  # 6-11 are already thermal — no change needed

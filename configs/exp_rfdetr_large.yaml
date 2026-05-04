@@ -1,0 +1,12 @@
+experiment_name: rfdetr_large_split_v1_baseline
+model: rfdetr
+size: large
+split: split_v1_baseline
+imgsz: 512
+epochs: 100
+batch_size: 4
+device: "cuda:0"
+freeze_backbone: false
+grad_accum_steps: 4
+notes: "RF-DETR Large ~128M — within-architecture size ablation"
+augmentations: a1_baseline

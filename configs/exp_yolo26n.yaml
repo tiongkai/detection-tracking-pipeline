@@ -1,0 +1,12 @@
+experiment_name: yolo26n_split_v1_baseline
+model: yolo26
+size: n
+split: split_v1_baseline
+imgsz: 640
+epochs: 100
+batch_size: 16
+device: "0"
+freeze_backbone: false
+grad_accum_steps: 1
+notes: "YOLO26 Nano — within-architecture size ablation baseline"
+augmentations: a1_baseline

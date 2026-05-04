@@ -1,0 +1,12 @@
+experiment_name: rfdetr_base_split_v1_expanded_v2
+model: rfdetr
+size: base
+split: split_v1_baseline_expanded
+imgsz: 512
+epochs: 100
+batch_size: 4
+device: "cuda:0"
+freeze_backbone: false
+grad_accum_steps: 4
+augmentations: a2_offline_expanded
+notes: "RF-DETR Base — offline expanded dataset (6x train), thermal sim disabled online"

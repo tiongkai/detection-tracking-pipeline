@@ -1,0 +1,12 @@
+experiment_name: yolo26l_split_v6_original_classes
+model: yolo26
+size: l
+split: split_v6_original_classes
+imgsz: 640
+epochs: 150
+batch_size: 8
+device: "1"
+freeze_backbone: false
+grad_accum_steps: 1
+augmentations: a2_offline_expanded
+notes: "YOLO26-L — v6 original 12-class domain-split, RGB-only offline augmentation, 150 epochs"

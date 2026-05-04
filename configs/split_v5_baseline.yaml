@@ -1,0 +1,24 @@
+# split_v2_baseline.yaml
+# v2 baseline split: ALL sources used for train/val (80:20).
+# No test holdout — test set to be added separately later.
+# Uses original data10 class names (no remapping at this stage).
+
+split_name: split_v5_merged
+data_root: data10
+sources_csv: image_sources.csv
+test_sources: []
+train_val_ratio: 0.8
+min_annotations_for_sparse: 10
+
+# Merge thermal + RGB into 6 domain-agnostic classes
+class_map:
+  boat-rgb: boat
+  human head: head
+  human torso: torso
+  outboard motor-rgb: outboard motor
+  boat: boat
+  human: human
+  outboard motor: outboard motor
+  human-rgb: human
+  vessel: vessel
+  vessel-rgb: vessel

@@ -1,0 +1,33 @@
+# split_v5_merged.yaml
+# 6-class domain-agnostic taxonomy on split_v5 (all sources in train/val, no test holdout).
+# Merges thermal + RGB variants into single semantic classes.
+# Offline-expanded via augment_split.py (5 augmentation variants per training image).
+#
+# Test set will be added separately when new labelled data is available.
+
+source_split: split_v5_baseline
+split_name: split_v5_merged
+
+classes:
+  - boat            # 0  (boat-rgb + boat-thermal)
+  - vessel          # 1  (vessel-rgb + vessel-thermal)
+  - human           # 2  (human-rgb + human-thermal)
+  - outboard motor  # 3  (outboard motor-rgb + outboard motor-thermal)
+  - head            # 4  (head-rgb + head-thermal)
+  - torso           # 5  (torso-rgb + torso-thermal)
+
+# Maps data10 class IDs -> v2_merged class IDs.
+base_remap:
+  0: 0   # boat-rgb             -> boat
+  1: 4   # human head           -> head
+  2: 5   # human torso          -> torso
+  3: 3   # outboard motor-rgb   -> outboard motor
+  4: 0   # boat (thermal)       -> boat
+  5: 2   # human (thermal)      -> human
+  6: 3   # outboard motor (thermal) -> outboard motor
+  7: 2   # human-rgb            -> human
+  8: 1   # vessel (thermal)     -> vessel
+  9: 1   # vessel-rgb           -> vessel
+
+# No thermal_remap needed — base_remap already unifies domains.
+thermal_remap: {}

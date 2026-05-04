@@ -1,0 +1,12 @@
+experiment_name: yolo11n_split_v1_v3_relabeled
+model: yolo11
+size: n
+split: split_v1_v3_relabeled
+imgsz: 640
+epochs: 100
+batch_size: 16
+device: "1"
+freeze_backbone: false
+grad_accum_steps: 1
+augmentations: a2_offline_expanded
+notes: "YOLO11-N — v3: relabeled thermal augments, 12 classes"

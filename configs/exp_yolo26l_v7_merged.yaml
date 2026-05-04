@@ -1,0 +1,12 @@
+experiment_name: yolo26l_split_v7_merged
+model: yolo26
+size: l
+split: split_v7_merged
+imgsz: 640
+epochs: 150
+batch_size: 8
+device: "0"
+freeze_backbone: false
+grad_accum_steps: 1
+augmentations: a2_offline_expanded
+notes: "YOLO26-L — v7_merged: 6-class, +lars/waterscenes, thermal inversion, increased motion blur, 150 epochs"

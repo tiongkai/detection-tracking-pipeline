@@ -1,0 +1,41 @@
+# split_v7_original_classes.yaml
+# 12-class domain-split taxonomy on v7 base (v6 + lars/waterscenes).
+# RGB-only offline augmentation + thermal inversion for thermal images.
+# Thermal augment variants get thermal class labels via thermal_remap.
+
+source_split: split_v7_original
+split_name: split_v7_original_classes
+
+classes:
+  - boat-rgb            # 0
+  - vessel-rgb          # 1
+  - human-rgb           # 2
+  - outboard motor-rgb  # 3
+  - head-rgb            # 4  (renamed from 'human head')
+  - torso-rgb           # 5  (renamed from 'human torso')
+  - boat-thermal        # 6  (renamed from 'boat')
+  - vessel-thermal      # 7  (renamed from 'vessel')
+  - human-thermal       # 8  (renamed from 'human')
+  - outboard motor-thermal  # 9  (renamed from 'outboard motor')
+  - head-thermal        # 10 (synthetic only — thermal aug of head-rgb)
+  - torso-thermal       # 11 (synthetic only — thermal aug of torso-rgb)
+
+base_remap:
+  0: 0   # boat-rgb             -> boat-rgb
+  1: 4   # human head           -> head-rgb
+  2: 5   # human torso          -> torso-rgb
+  3: 3   # outboard motor-rgb   -> outboard motor-rgb
+  4: 6   # boat (thermal)       -> boat-thermal
+  5: 8   # human (thermal)      -> human-thermal
+  6: 9   # outboard motor (thermal) -> outboard motor-thermal
+  7: 2   # human-rgb            -> human-rgb
+  8: 7   # vessel (thermal)     -> vessel-thermal
+  9: 1   # vessel-rgb           -> vessel-rgb
+
+thermal_remap:
+  0: 6    # boat-rgb             -> boat-thermal
+  1: 7    # vessel-rgb           -> vessel-thermal
+  2: 8    # human-rgb            -> human-thermal
+  3: 9    # outboard motor-rgb   -> outboard motor-thermal
+  4: 10   # head-rgb             -> head-thermal
+  5: 11   # torso-rgb            -> torso-thermal

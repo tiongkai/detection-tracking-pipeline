@@ -1,0 +1,12 @@
+experiment_name: yolo11l_split_v1_baseline
+model: yolo11
+size: l
+split: split_v1_baseline
+imgsz: 640
+epochs: 100
+batch_size: 8
+device: "0"
+freeze_backbone: false
+grad_accum_steps: 1
+notes: "YOLO11 Large — cross-architecture comparable (25.3M params)"
+augmentations: a1_baseline

@@ -1,0 +1,12 @@
+experiment_name: yolo26l_split_v5_merged
+model: yolo26
+size: l
+split: split_v5_merged
+imgsz: 640
+epochs: 100
+batch_size: 8
+device: "0"
+freeze_backbone: false
+grad_accum_steps: 1
+augmentations: a1_baseline
+notes: "YOLO26-L — v5_merged: all sources in train/val, 6 merged classes, no offline augmentation"

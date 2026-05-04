@@ -1,0 +1,10 @@
+# split_v6_original_baseline.yaml
+# All sources in train/val (80:20), no test holdout.
+# Original 10-class data10 taxonomy — no class merging.
+
+split_name: split_v6_original
+data_root: data10
+sources_csv: image_sources.csv
+test_sources: []
+train_val_ratio: 0.8
+min_annotations_for_sparse: 10

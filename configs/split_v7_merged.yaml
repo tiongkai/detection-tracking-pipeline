@@ -1,0 +1,29 @@
+# split_v7_merged.yaml
+# 6-class domain-agnostic taxonomy on split_v7 base (v6 + lars/waterscenes).
+# RGB offline augmentation + thermal inversion for thermal images.
+
+source_split: split_v7_original
+split_name: split_v7_merged
+
+classes:
+  - boat            # 0  (boat-rgb + boat-thermal)
+  - head            # 1  (human head)
+  - torso           # 2  (human torso)
+  - outboard motor  # 3  (outboard motor-rgb + outboard motor-thermal)
+  - human           # 4  (human-rgb + human-thermal)
+  - vessel          # 5  (vessel-rgb + vessel-thermal)
+
+base_remap:
+  0: 0   # boat-rgb             -> boat
+  1: 1   # human head           -> head
+  2: 2   # human torso          -> torso
+  3: 3   # outboard motor-rgb   -> outboard motor
+  4: 0   # boat (thermal)       -> boat
+  5: 4   # human (thermal)      -> human
+  6: 3   # outboard motor (thermal) -> outboard motor
+  7: 4   # human-rgb            -> human
+  8: 5   # vessel (thermal)     -> vessel
+  9: 5   # vessel-rgb           -> vessel
+
+# No thermal_remap — base_remap already unifies domains.
+thermal_remap: {}

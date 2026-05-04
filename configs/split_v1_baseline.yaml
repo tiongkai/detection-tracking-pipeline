@@ -1,0 +1,34 @@
+# pipeline/configs/split_v1_baseline.yaml
+# Baseline split configuration for the unified detection pipeline.
+#
+# To create a new split variant, copy this file and modify the fields:
+#   - test_sources: change which sources are held out as the test set
+#   - train_val_ratio: adjust the proportion of remaining data for training
+#   - class_map: add this field to remap/merge class names
+#     Example (merge thermal+rgb into single classes):
+#       class_map:
+#         boat: boat
+#         boat-rgb: boat
+#         vessel: vessel
+#         vessel-rgb: vessel
+#         human: human
+#         human-rgb: human
+#         outboard motor: outboard motor
+#         outboard motor-rgb: outboard motor
+#         human head: human
+#         human torso: human
+#   - filter_sources: list sources to include (omit to use all non-test sources)
+#   - filter_classes: list class IDs to include (omit to keep all 10)
+#
+# Then run:
+#   python pipeline/split/split_data.py --config pipeline/configs/split_v2_your_name.yaml
+# And update the 'split:' field in relevant experiment YAMLs.
+split_name: split_v1_baseline
+data_root: data10
+sources_csv: image_sources.csv
+test_sources:
+  - st
+  - willow
+  - dahua
+train_val_ratio: 0.8
+min_annotations_for_sparse: 10

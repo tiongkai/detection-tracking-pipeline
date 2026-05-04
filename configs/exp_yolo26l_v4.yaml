@@ -1,0 +1,12 @@
+experiment_name: yolo26l_split_v1_v4_merged
+model: yolo26
+size: l
+split: split_v1_v4_merged
+imgsz: 640
+epochs: 100
+batch_size: 8
+device: "1"
+freeze_backbone: false
+grad_accum_steps: 1
+augmentations: a2_offline_expanded
+notes: "YOLO26-L — v4: merged domain classes, 6 classes"
