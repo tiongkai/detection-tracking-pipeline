@@ -162,7 +162,7 @@ def draw_tracks(frame, tracks, coasting, class_names, smoother):
 def process_clip(
     model, tracker, class_names, clip_path, out_path,
     conf=0.3, iou=0.5, ema_alpha=0.5, det_interval=1, max_coast=30, coast_cls_ids=None,
-    class_groups=None, nms_iou_thresh=0.5,
+    class_groups=None, nms_iou_thresh=0.5, mot_path=None,
 ):
     cap = cv2.VideoCapture(clip_path)
     if not cap.isOpened():
@@ -176,6 +176,7 @@ def process_clip(
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(str(out_path), fourcc, fps, (w, h))
     smoother = BoxSmoother(alpha=ema_alpha)
+    mot_lines = [] if mot_path else None
 
     frame_idx = 0
     while True:
@@ -207,6 +208,24 @@ def process_clip(
 
         coasting = get_coasting_tracks(tracker, matched_ids, class_names, max_coast=max_coast, coast_cls_ids=coast_cls_ids)
 
+        if mot_lines is not None:
+            if len(tracks) > 0:
+                for trk in tracks:
+                    x1, y1, x2, y2 = trk[:4]
+                    tid = int(trk[4])
+                    c = float(trk[5])
+                    cls_id = int(trk[6])
+                    mot_lines.append(
+                        f"{frame_idx},{tid},{x1:.2f},{y1:.2f},{x2-x1:.2f},{y2-y1:.2f},{c:.4f},{cls_id},1.00"
+                    )
+            for ct in coasting:
+                bx1, by1, bx2, by2 = ct["bbox"]
+                vis = max(0.1, 1.0 - ct["age"] / max_coast)
+                mot_lines.append(
+                    f"{frame_idx},{ct['track_id']},{bx1:.2f},{by1:.2f},{bx2-bx1:.2f},{by2-by1:.2f},"
+                    f"{ct['conf']:.4f},{ct['cls']},{vis:.2f}"
+                )
+
         draw_tracks(frame, tracks, coasting, class_names, smoother)
 
         writer.write(frame)
@@ -220,6 +239,10 @@ def process_clip(
     cap.release()
     writer.release()
 
+    if mot_path and mot_lines:
+        Path(mot_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(mot_path).write_text("\n".join(mot_lines) + "\n")
+
 
 def build_class_groups(class_names):
     """Build cross-modal NMS groups for the 12-class domain-split taxonomy.
@@ -231,7 +254,7 @@ def build_class_groups(class_names):
     return {base: ids for base, ids in name_to_ids.items() if len(ids) > 1}
 
 
-def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="cuda:0", det_interval=1, max_coast=30, coast_classes=None, nms_iou_thresh=0.5, enable_nms=False):
+def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="cuda:0", det_interval=1, max_coast=30, coast_classes=None, nms_iou_thresh=0.5, enable_nms=False, save_mot=False):
     model = YOLO(weights)
     class_names = model.names
 
@@ -250,9 +273,16 @@ def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="
         class_groups = build_class_groups(class_names)
         print(f"Cross-modal NMS enabled (iou_thresh={nms_iou_thresh}): {class_groups}")
 
+    mot_dir = None
+    if save_mot:
+        mot_dir = out_dir / "mot"
+        mot_dir.mkdir(parents=True, exist_ok=True)
+
     print(f"Processing {len(clips)} clips -> {out_dir}")
     print(f"Classes: {class_names}")
     print(f"Tracker: HybridSORT (with Kalman prediction) | EMA alpha: {ema_alpha} | conf: {conf} | det_interval: {det_interval} | max_coast: {max_coast} | device: {device}")
+    if mot_dir:
+        print(f"MOT output: {mot_dir}")
 
     for i, clip in enumerate(clips):
         name = Path(clip).stem
@@ -281,8 +311,10 @@ def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="
             longterm_reid_correction_thresh_low=0.5,
         )
 
+        mot_path = str(mot_dir / f"{name}.txt") if mot_dir else None
+
         print(f"[{i+1}/{len(clips)}] {name} (det every {det_interval} frame(s))", flush=True)
-        process_clip(model, tracker, class_names, clip, out_mp4, conf=conf, iou=iou, ema_alpha=ema_alpha, det_interval=det_interval, max_coast=max_coast, coast_cls_ids=coast_cls_ids, class_groups=class_groups, nms_iou_thresh=nms_iou_thresh)
+        process_clip(model, tracker, class_names, clip, out_mp4, conf=conf, iou=iou, ema_alpha=ema_alpha, det_interval=det_interval, max_coast=max_coast, coast_cls_ids=coast_cls_ids, class_groups=class_groups, nms_iou_thresh=nms_iou_thresh, mot_path=mot_path)
         size_mb = out_mp4.stat().st_size / 1e6
         print(f"  -> {out_mp4.name} ({size_mb:.1f} MB)")
 
@@ -310,9 +342,11 @@ if __name__ == "__main__":
                         help="Enable cross-modal NMS (suppress duplicate detections across RGB/thermal class pairs)")
     parser.add_argument("--nms-iou-thresh", type=float, default=0.5,
                         help="IoU threshold for cross-modal NMS (default 0.5)")
+    parser.add_argument("--save-mot", action="store_true",
+                        help="Save MOTChallenge-format tracking output to <out>/mot/")
     parser.add_argument("--device", default="cuda:0", help="Torch device")
     args = parser.parse_args()
     run(args.weights, args.source, args.out,
         conf=args.conf, iou=args.iou, ema_alpha=args.ema_alpha, device=args.device,
         det_interval=args.det_interval, max_coast=args.max_coast, coast_classes=args.coast_classes,
-        nms_iou_thresh=args.nms_iou_thresh, enable_nms=args.enable_nms)
+        nms_iou_thresh=args.nms_iou_thresh, enable_nms=args.enable_nms, save_mot=args.save_mot)

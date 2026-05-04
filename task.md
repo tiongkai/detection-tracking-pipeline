@@ -121,41 +121,104 @@ Currently we evaluate tracking by visual inspection of output videos. This doesn
 
 ### 2.5 — Baseline measurement + parameter tuning experiments (~3 days)
 
-- [ ] **Run baseline metrics on current tracker config**
+#### Background: How HybridSORT association works
 
-  Run the eval script on the annotated clips with the current settings from `track.md`. Record as the baseline.
+When a new frame arrives, the tracker tries to match each detection to an existing track in three stages:
+
+**Stage 1 (high-confidence detections):** Builds a cost matrix combining IoU, 4-corner motion consistency, and ReID cosine similarity. The Hungarian algorithm finds the optimal assignment. After assignment, a post-match filter rejects pairs where both the embedding distance is high AND IoU is low.
+
+```
+cost = 1.0 * (-(IoU + angle_cost)) + 4.6 * emb_cost + 0.25 * long_emb_cost
+```
+
+**Stage 2 (BYTE — low-confidence detections):** Detections between `low_thresh` (0.1) and `det_thresh` (0.3) get a second-chance association with unmatched tracks from stage 1. Uses IoU + ReID but no long-term feature bank.
+
+**Stage 3 (last-observation fallback):** Remaining unmatched detections and tracks get one final IoU-only check against each track's last real detected position. No ReID.
+
+**If all three stages fail:** The detection creates a new track with a fresh ID. This is the track fragmentation problem — the object is the same, but it gets a new number.
+
+#### The core problem: Track fragmentation
+
+We observe cases where the same object gets assigned a new track ID despite the old track still being alive. For example, a boat is tracked as id1 for frames 1–10, then on frame 11 it suddenly becomes id14. id1 continues coasting on Kalman predictions while id14 starts fresh.
+
+This happens when the detection on frame 11 fails to match id1 in all three association stages. The most common reasons:
+
+1. **KF prediction drifted** — after a few frames of coasting (no detection match), the Kalman filter's predicted box position diverges from reality. When the detection reappears, IoU between prediction and detection is too low.
+2. **Appearance changed** — lighting shift, angle change, or partial occlusion causes the ReID embedding to be too different from the track's stored appearance, and the post-match filter rejects the pair.
+3. **Cross-modal class switch** — the model labels the same object as `boat-rgb` on one frame and `boat-thermal` on the next. With `per_class=True`, these are completely separate tracker instances that can never match. (Largely mitigated by cross-modal NMS.)
+
+Each experiment below targets one of these causes. The metric to watch is **IDF1** (measures ID consistency over a track's lifetime) and **ID Switches** (counts exactly how many times an ID changes on the same GT object).
+
+---
+
+#### Experiments
+
+- [ ] **Experiment 0: Baseline**
+
+  Run the eval script on all annotated clips with the current settings from `track.md`. Record as the baseline for all comparisons.
+
+  Current config:
+  ```
+  iou_threshold=0.15, alpha=0.7, longterm_reid_correction_thresh=0.5,
+  EG_weight_high_score=4.6, det_thresh=0.3, enable_nms=off
+  ```
 
   *~0.5 day*
 
-- [ ] **Experiment: `iou_threshold` tuning**
+- [ ] **Experiment 1: `iou_threshold` tuning**
 
-  Run with `iou_threshold` = 0.15 (current), 0.10, 0.05. Compare MOTA, IDF1, and ID switches. This tests whether KF drift after coasting is causing track fragmentation.
-
-  *~0.5 day*
-
-- [ ] **Experiment: ReID correction threshold tuning**
-
-  Run with `longterm_reid_correction_thresh` = 0.5 (current), 0.6, 0.7. This tests whether the post-match filter is rejecting valid associations after appearance changes.
+  **What:** Run with `iou_threshold` = 0.15 (baseline), 0.10, 0.05
+  **Why:** This is the hard gate for accepting a match. If IoU between the KF-predicted box and the detection is below this threshold, the match is **always rejected** — regardless of how good the ReID similarity is. After a track coasts for several frames, the Kalman prediction drifts and IoU drops. Lowering this threshold lets the tracker accept spatially weaker matches, giving ReID a chance to confirm the identity.
+  **Trade-off:** Too low → false matches between nearby but different objects. Less of a concern in our maritime use case (few objects, far apart) than in crowded pedestrian scenes.
+  **Watch for:** IDF1 increase + ID switch decrease = KF drift was causing fragmentation. MOTA decrease = false matches introduced.
 
   *~0.5 day*
 
-- [ ] **Experiment: `alpha` (ReID EMA) tuning**
+- [ ] **Experiment 2: `longterm_reid_correction_thresh` tuning**
 
-  Run with `alpha` = 0.7 (current), 0.5, 0.3. This tests whether the short-term appearance feature is adapting fast enough to appearance changes.
+  **What:** Run with `longterm_reid_correction_thresh` = 0.5 (baseline), 0.6, 0.7
+  **Why:** After the Hungarian algorithm assigns a detection to a track, this post-match filter double-checks: if `cosine_distance > threshold AND IoU < iou_threshold`, the match is rejected and the detection becomes a new track. At 0.5, any cosine distance above 0.5 combined with poor IoU kills the match. This is aggressive — appearance can change legitimately (lighting gradients, angle changes on a turning boat). Raising the threshold makes the filter more permissive: only very dissimilar appearances get rejected.
+  **How it interacts with Experiment 1:** Lowering `iou_threshold` means more matches will have `IoU < iou_threshold`, which means the correction filter fires more often. These two parameters should ideally be tuned together.
+  **Watch for:** IDF1 increase + ID switch decrease = the filter was killing valid matches. New false-positive ID merges = threshold is too permissive.
 
   *~0.5 day*
 
-- [ ] **Experiment: Interclass NMS impact**
+- [ ] **Experiment 3: `alpha` (ReID EMA weight) tuning**
 
-  Run with and without `--enable-nms` on thermal/twilight clips. Compare ID switches — NMS should reduce duplicate track IDs on the same object.
+  **What:** Run with `alpha` = 0.7 (baseline), 0.5, 0.3
+  **Why:** Each track maintains a `smooth_feat` — an exponential moving average of past ReID embeddings. The update rule is: `smooth_feat = alpha * smooth_feat + (1-alpha) * new_feat`. At alpha=0.7, the feature is 70% old appearance + 30% new. This means appearance changes slowly in the stored representation. If a boat gradually changes appearance (e.g. dusk lighting transition, rotating angle), the stored feature may lag behind reality, causing high cosine distance when the tracker tries to match. Lower alpha = the stored feature adapts faster to the current appearance.
+  **Trade-off:** Too low → the feature becomes volatile, changing drastically frame-to-frame. Brief occlusions or detection noise could corrupt it, making re-association harder after the object reappears.
+  **Watch for:** IDF1 increase on clips with gradual appearance change (dusk/twilight clips). Fragmentation increase on clips with occlusion = alpha too low.
+
+  *~0.5 day*
+
+- [ ] **Experiment 4: `EG_weight_high_score` tuning**
+
+  **What:** Run with `EG_weight_high_score` = 4.6 (baseline), 6.0, 8.0
+  **Why:** This weight controls how much ReID influences the stage 1 cost matrix relative to IoU + motion. The cost formula is: `cost = 1.0 * (-(IoU + angle_cost)) + EG_weight * emb_cost + 0.25 * long_emb_cost`. At 4.6, ReID already weighs heavily. Increasing it further means that even when IoU is poor (KF drift), a good appearance match can pull the assignment toward the correct track.
+  **Trade-off:** If the ReID model produces a false similarity (different objects with similar appearance), a high weight will force an incorrect match. In maritime scenarios (boats look similar), this risk is real.
+  **Watch for:** ID switch decrease = ReID is overriding bad IoU for correct matches. MOTA decrease = ReID is forcing wrong matches between similar-looking objects.
+
+  *~0.5 day*
+
+- [ ] **Experiment 5: Interclass NMS impact**
+
+  **What:** Run with and without `--enable-nms --nms-iou-thresh 0.5` on thermal/twilight clips
+  **Why:** The 12-class model fires both `boat-rgb` and `boat-thermal` on ambiguous-lighting objects. Without NMS, both detections enter the tracker as separate per-class tracks — guaranteed duplicate IDs for the same physical object. With NMS, the lower-confidence duplicate is suppressed before the tracker sees it. This was measured to reduce dual-class frames by 72% on pt80 twilight clips.
+  **Watch for:** ID switch decrease on twilight clips = NMS is preventing cross-class duplicate tracks. No change on clear-domain clips (RGB-only or thermal-only) = expected, NMS only fires when both classes are present.
 
   *~0.5 day*
 
 - [ ] **Write up findings**
 
-  Document results in a table comparing all configs. Recommend the best config with justification based on metrics.
+  Document all results in a comparison table. For each experiment, note:
+  - Which metric improved, which degraded
+  - Whether the improvement was on specific clip types (twilight vs clear, occlusion vs open)
+  - Recommended value with justification
 
-  Deliverable: updated `tracker_eval.md` with metrics tables for each experiment and a recommended config.
+  If experiments 1 and 2 both help, run a combined config (e.g. `iou_threshold=0.05 + longterm_reid_correction_thresh=0.7`) and measure whether the improvements stack.
+
+  Deliverable: updated `tracker_eval.md` with metrics tables for each experiment and a final recommended config.
 
   *~0.5 day*
 
@@ -169,7 +232,7 @@ Currently we evaluate tracking by visual inspection of output videos. This doesn
 | 2.2 Ground truth annotation | 5 |
 | 2.3 MOTChallenge output format | 1 |
 | 2.4 TrackEval integration script | 3 |
-| 2.5 Baseline + 4 experiments + writeup | 3 |
-| **Total** | **~14 working days** |
+| 2.5 Baseline + 5 experiments + writeup | 4 |
+| **Total** | **~15 working days** |
 
 Tasks 2.1 and 2.2 are best done sequentially — background reading gives context for consistent annotation decisions. Tasks 2.3 and 2.4 are sequential. Task 2.5 depends on all prior tasks.

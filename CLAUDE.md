@@ -19,7 +19,8 @@ detection-tracking-pipeline/
 │   ├── track_video_predict.py      # Tracking + Kalman prediction + interclass NMS
 │   └── cross_modal_nms.py          # Cross-modal NMS module
 ├── eval/
-│   ├── eval.py                     # Evaluation (inference + metrics + interclass NMS)
+│   ├── eval.py                     # Detection evaluation (inference + metrics + interclass NMS)
+│   ├── eval_tracking.py            # Tracking evaluation (HOTA, MOTA, IDF1, IDsw, Frag, MT/ML)
 │   ├── cross_modal_nms.py          # Cross-modal NMS module (eval copy)
 │   ├── compare_models.py           # Cross-experiment comparison
 │   ├── image_metrics.py            # Per-image quality metrics
@@ -73,7 +74,7 @@ We use **HybridSORT** from `boxmot` with CLIP-based vehicle ReID (`clip_veri.pt`
 
 Two tracking scripts:
 - `track/track_video.py` — standard tracking, only draws detected boxes
-- `track/track_video_predict.py` — also draws Kalman-predicted boxes (dashed outline) when detection fails, supports interclass NMS via `--enable-nms`
+- `track/track_video_predict.py` — also draws Kalman-predicted boxes (dashed outline) when detection fails, supports interclass NMS via `--enable-nms`, and MOTChallenge-format output via `--save-mot`
 
 ### Current Tracker Config
 
@@ -105,18 +106,55 @@ Available in:
 
 ---
 
-## Conda Environments
+## Tracking Evaluation
 
-| Task | Environment |
-|------|-------------|
-| Tracking (track/*.py) | `boat-tracker` (torch 2.7.1+cu126, ultralytics 8.4.3, boxmot 15.0.9) |
-| Evaluation (eval/*.py) | `obj-det` (pycocotools, pandas, numpy, opencv-python) |
+### MOTChallenge Output Format
 
----
+`track_video_predict.py --save-mot` writes a `.txt` file per clip into `<out>/mot/`. Both GT and tracker output use the same 9-column comma-separated format:
 
-## Quick Start
+```
+<frame>,<id>,<bb_left>,<bb_top>,<bb_width>,<bb_height>,<conf>,<class_id>,<visibility>
+```
 
-### Run tracking with Kalman prediction + NMS
+| Column | GT meaning | Tracker meaning |
+|--------|-----------|-----------------|
+| `conf` | 1 = consider, 0 = ignore | Detection confidence |
+| `class_id` | Object class | Predicted class |
+| `visibility` | Fraction visible (0.0–1.0, for occlusion) | 1.0 = detected, <1.0 = Kalman-predicted (decays with coast age) |
+
+Bounding boxes are in **xywh** format (top-left x, top-left y, width, height). Frames are 1-indexed.
+
+### Directory Layout
+
+```
+gt_dir/                          tracker_dir/
+  <clip_name>/                     <clip_name>.txt
+    gt.txt
+```
+
+GT annotations go in per-clip subdirectories. Tracker output is flat — one `.txt` per clip. The eval script matches by clip name.
+
+### Eval Script
+
+`eval/eval_tracking.py` computes HOTA, MOTA, IDF1, ID switches, fragmentation, and MT/ML. No extra dependencies beyond numpy and scipy (both in `boat-tracker` env).
+
+```bash
+# Single config
+conda run -n boat-tracker python eval/eval_tracking.py \
+    --gt data/eval/gt \
+    --tracker results/tracker/mot/baseline
+
+# Compare two configs side-by-side
+conda run -n boat-tracker python eval/eval_tracking.py \
+    --gt data/eval/gt \
+    --tracker results/tracker/mot/baseline results/tracker/mot/tuned \
+    --names baseline tuned \
+    -o results/tracker/eval
+```
+
+Outputs a markdown table + per-sequence breakdown. With `-o`, also writes `tracking_report.md` and per-tracker JSON files.
+
+### Tracking with MOT Output
 
 ```bash
 conda run -n boat-tracker python track/track_video_predict.py \
@@ -125,7 +163,37 @@ conda run -n boat-tracker python track/track_video_predict.py \
     --out /path/to/output \
     --conf 0.3 --iou 0.5 --ema-alpha 1.0 \
     --max-coast 10 --coast-classes boat \
-    --enable-nms --nms-iou-thresh 0.5
+    --enable-nms --nms-iou-thresh 0.5 \
+    --save-mot
+```
+
+MOT files are written to `<out>/mot/<clip_name>.txt`. Detection-matched tracks have visibility=1.0. Kalman-predicted (coasting) tracks decay: `max(0.1, 1.0 - age/max_coast)`.
+
+---
+
+## Conda Environments
+
+| Task | Environment |
+|------|-------------|
+| Tracking (track/*.py) | `boat-tracker` (torch 2.7.1+cu126, ultralytics 8.4.3, boxmot 15.0.9) |
+| Tracking eval (eval/eval_tracking.py) | `boat-tracker` (numpy, scipy — no extra deps) |
+| Detection eval (eval/eval.py) | `obj-det` (pycocotools, pandas, numpy, opencv-python) |
+
+---
+
+## Quick Start
+
+### Run tracking with Kalman prediction + NMS + MOT output
+
+```bash
+conda run -n boat-tracker python track/track_video_predict.py \
+    --weights weights/best.pt \
+    --source /path/to/clips \
+    --out /path/to/output \
+    --conf 0.3 --iou 0.5 --ema-alpha 1.0 \
+    --max-coast 10 --coast-classes boat \
+    --enable-nms --nms-iou-thresh 0.5 \
+    --save-mot
 ```
 
 ### Run standard tracking (no Kalman prediction)
