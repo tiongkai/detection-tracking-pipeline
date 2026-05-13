@@ -1,5 +1,28 @@
 # Changelog
 
+## Class-aware matching in tracking eval (2026-05-13)
+
+### Problem
+
+`eval/eval_tracking.py` matched GT to predictions purely by IoU, ignoring class labels. A `boat-rgb` prediction could match a `human-thermal` GT entry if their boxes overlapped above the IoU threshold. In maritime scenes with overlapping boat/human detections (e.g. a person standing on a boat), this silently corrupts metrics.
+
+### Solution
+
+Added class compatibility check to `match_frames()`. Before Hungarian assignment, pairs with incompatible classes are blocked (`cost = 1e6`). Compatibility uses the same base-name grouping as cross-modal NMS — strips `-rgb`/`-thermal` suffixes and compares. So `boat-rgb` can still match `boat-thermal` GT (same object type, different domain), but `boat` can never match `human`.
+
+### Files
+
+#### `eval/eval_tracking.py` (MODIFIED)
+
+- `CLASS_NAMES` — 12-class domain-split name map
+- `_base_class(cls_id)` — strips domain suffix to get base object type
+- `classes_compatible(cls_a, cls_b)` — returns True if same base type
+- `match_frames()` — now extracts `gt_classes` and `pred_classes` per frame, sets `cost[r, c] = 1e6` for incompatible pairs before `linear_sum_assignment`
+
+All metrics (MOTA, IDF1, HOTA, ID switches, fragmentation, MT/ML) flow through `match_frames`, so every metric benefits from this fix. `compute_hota` calls `match_frames` at each IoU threshold and inherits the fix automatically.
+
+---
+
 ## Cross-modal NMS (2026-05-04)
 
 ### Problem

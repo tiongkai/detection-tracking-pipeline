@@ -81,6 +81,30 @@ def discover_sequences(gt_dir, tracker_dir):
 
 
 # ---------------------------------------------------------------------------
+# Class compatibility (domain-split taxonomy)
+# ---------------------------------------------------------------------------
+
+# 12-class domain-split: same object type across RGB/thermal should match.
+CLASS_NAMES = {
+    0: "boat-rgb", 1: "vessel-rgb", 2: "human-rgb",
+    3: "outboard motor-rgb", 4: "head-rgb", 5: "torso-rgb",
+    6: "boat-thermal", 7: "vessel-thermal", 8: "human-thermal",
+    9: "outboard motor-thermal", 10: "head-thermal", 11: "torso-thermal",
+}
+
+
+def _base_class(cls_id):
+    """Strip domain suffix to get the base object type."""
+    name = CLASS_NAMES.get(cls_id, str(cls_id))
+    return name.replace("-rgb", "").replace("-thermal", "")
+
+
+def classes_compatible(cls_a, cls_b):
+    """True if two class IDs refer to the same object type (possibly different domains)."""
+    return _base_class(cls_a) == _base_class(cls_b)
+
+
+# ---------------------------------------------------------------------------
 # IoU
 # ---------------------------------------------------------------------------
 
@@ -125,12 +149,18 @@ def match_frames(gt_data, pred_data, iou_thresh):
         pred_ids = [e[0] for e in pred_entries]
         gt_boxes = [(e[1], e[2], e[3], e[4]) for e in gt_entries]
         pred_boxes = [(e[1], e[2], e[3], e[4]) for e in pred_entries]
+        gt_classes = [e[6] for e in gt_entries]
+        pred_classes = [e[6] for e in pred_entries]
 
         matches = []  # (gt_id, pred_id, iou)
         if gt_boxes and pred_boxes:
             iou = iou_matrix(gt_boxes, pred_boxes)
             cost = 1 - iou
             cost[iou < iou_thresh] = 1e6
+            for r in range(len(gt_classes)):
+                for c in range(len(pred_classes)):
+                    if not classes_compatible(gt_classes[r], pred_classes[c]):
+                        cost[r, c] = 1e6
             ri, ci = linear_sum_assignment(cost)
             for r, c in zip(ri, ci):
                 if iou[r, c] >= iou_thresh:
