@@ -119,7 +119,9 @@ detection-tracking-pipeline/
 │   ├── track_video_predict.py      # Tracking + Kalman prediction + interclass NMS
 │   └── cross_modal_nms.py          # Cross-modal NMS module
 ├── eval/
-│   ├── eval.py                     # Evaluation (inference + metrics + interclass NMS)
+│   ├── eval.py                     # Detection evaluation (inference + metrics + interclass NMS)
+│   ├── eval_tracking.py            # Tracking evaluation (HOTA, MOTA, IDF1, IDsw, Frag, MT/ML)
+│   ├── sample_tracking_metrics.json # Schema for tracking eval JSON output
 │   ├── cross_modal_nms.py          # Cross-modal NMS module (eval copy)
 │   ├── compare_models.py           # Cross-experiment comparison
 │   ├── image_metrics.py            # Per-image quality metrics
@@ -152,6 +154,69 @@ conda run -n obj-det python eval/eval.py \
     --config configs/exp_yolo26l_v7_original.yaml \
     --enable-interclass-nms --nms-iou-thresh 0.5
 ```
+
+### Tracking Evaluation
+
+Two-step process: generate MOTChallenge-format tracker output, then evaluate against ground truth.
+
+**Step 1 — Generate MOT output**
+
+```bash
+conda run -n boat-tracker python track/track_video_predict.py \
+    --weights weights/best.pt \
+    --source /path/to/eval/clips \
+    --out results/tracker/baseline \
+    --conf 0.3 --iou 0.5 --ema-alpha 1.0 \
+    --max-coast 10 --coast-classes boat \
+    --enable-nms --nms-iou-thresh 0.5 \
+    --save-mot
+```
+
+**Step 2 — Evaluate against ground truth**
+
+```bash
+# Single config
+conda run -n boat-tracker python eval/eval_tracking.py \
+    --gt data/eval/gt \
+    --tracker results/tracker/baseline/mot \
+    -o results/tracker/eval
+
+# Compare two configs side-by-side
+conda run -n boat-tracker python eval/eval_tracking.py \
+    --gt data/eval/gt \
+    --tracker results/tracker/mot/baseline results/tracker/mot/tuned \
+    --names baseline tuned \
+    -o results/tracker/eval
+```
+
+**Output structure:**
+
+```
+results/tracker/
+├── baseline/
+│   ├── clip_001.mp4                   # annotated video
+│   ├── clip_002.mp4
+│   └── mot/                           # MOTChallenge-format tracker output (--save-mot)
+│       ├── clip_001.txt
+│       └── clip_002.txt
+└── eval/                              # evaluation output (-o)
+    ├── tracking_report.md             # markdown summary table
+    └── tracking_metrics_baseline.json # per-sequence + overall metrics
+```
+
+**Ground truth directory layout** (required for step 2):
+
+```
+data/eval/gt/
+├── clip_001/
+│   └── gt.txt
+└── clip_002/
+    └── gt.txt
+```
+
+GT files use the same 9-column MOTChallenge format. See `eval/eval_tracking.py` header or `CLAUDE.md` for column definitions.
+
+The JSON output schema is documented in `eval/sample_tracking_metrics.json`.
 
 ## Dependencies
 
