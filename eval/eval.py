@@ -1,10 +1,19 @@
 """
-Evaluation script. Runs inference on the test split and computes structured metrics.
+Detection evaluation. Computes metrics from pre-generated predictions JSON against GT.
 
-Usage:
-    python pipeline/eval/eval.py --config pipeline/configs/exp_yolo11l.yaml
+Two modes:
+  1. Predictions JSON (recommended — decouples inference from evaluation):
+         python eval/eval.py --predictions results/detections/yolo_baseline.json \
+             --gt-json data/splits/split_v7/coco/test/_annotations.coco.json \
+             --manifest data/splits/split_v7/split_manifest.csv \
+             -o results/eval/yolo_baseline
 
-Outputs to results/<experiment_name>/eval/:
+  2. Legacy config mode (runs inference + evaluation in one pass):
+         python eval/eval.py --config configs/exp_yolo26l_v7_original.yaml
+
+Generate predictions with detection/detect.py first (supports yolo, rfdetr, sahi).
+
+Outputs:
     metrics.json          — all metrics (overall, per-class, per-source, per-domain, matrix)
     metrics_report.md     — human-readable tables
 """
@@ -483,102 +492,166 @@ def write_metrics_report(metrics: dict, out_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate a trained model on the test set.")
-    parser.add_argument("--config", required=True)
-    parser.add_argument("--conf", type=float, default=0.001, help="Confidence threshold")
+    parser = argparse.ArgumentParser(
+        description="Evaluate detections against ground truth. "
+        "Use --predictions for pre-generated JSON (recommended), or --config for legacy mode."
+    )
+    # New predictions-based mode
+    parser.add_argument("--predictions", default=None,
+                        help="Path to COCO-format predictions JSON (from detection/detect.py)")
+    parser.add_argument("--gt-json", default=None,
+                        help="Path to COCO GT JSON")
+    parser.add_argument("--manifest", default=None,
+                        help="Path to split_manifest.csv (for per-source breakdown)")
+    parser.add_argument("-o", "--out", default=None,
+                        help="Output directory for metrics and report")
+    # Legacy config mode
+    parser.add_argument("--config", default=None,
+                        help="Legacy: experiment YAML config (runs inference + eval)")
+    parser.add_argument("--conf", type=float, default=0.001, help="Legacy: confidence threshold")
     parser.add_argument("--enable-interclass-nms", action="store_true",
-                        help="Apply cross-modal NMS to suppress duplicate detections across RGB/thermal class pairs")
+                        help="Legacy: apply cross-modal NMS (use detection/detect.py --enable-nms instead)")
     parser.add_argument("--nms-iou-thresh", type=float, default=0.5,
-                        help="IoU threshold for interclass NMS (default 0.5)")
+                        help="Legacy: IoU threshold for interclass NMS")
     args = parser.parse_args()
 
-    with open(args.config) as f:
-        config = yaml.safe_load(f)
+    if args.predictions:
+        # --- New mode: evaluate pre-generated predictions ---
+        if not args.gt_json:
+            parser.error("--gt-json is required when using --predictions")
 
-    exp_name = config["experiment_name"]
-    split_name = config["split"]
-    model_type = config["model"]
+        raw = json.loads(Path(args.predictions).read_text())
+        # Support both flat list and nested {"predictions": [...], "timing": {...}} format
+        if isinstance(raw, dict) and "predictions" in raw:
+            predictions = raw["predictions"]
+            if raw.get("timing"):
+                t = raw["timing"]
+                print(f"Inference latency: {t['mean_ms']:.1f} ms mean, {t['fps']:.1f} FPS ({t['n_images']} images)")
+        else:
+            predictions = raw
+        predictions = predictions_to_coco(predictions)
+        test_coco_json = args.gt_json
 
-    split_dir = PROJECT_ROOT / "data" / "splits" / split_name
-    test_coco_json = str(split_dir / "coco" / "test" / "_annotations.coco.json")
-    manifest_path = split_dir / "split_manifest.csv"
-    split_manifest = pd.read_csv(manifest_path)
-    test_manifest = split_manifest[split_manifest["split"] == "test"]
+        if args.manifest:
+            split_manifest = pd.read_csv(args.manifest)
+            test_manifest = split_manifest[split_manifest["split"] == "test"]
+        else:
+            test_manifest = None
 
-    results_dir = PROJECT_ROOT / "results" / exp_name
-    eval_dir = results_dir / "eval"
-    eval_dir.mkdir(parents=True, exist_ok=True)
+        eval_dir = Path(args.out) if args.out else Path(args.predictions).parent
+        eval_dir.mkdir(parents=True, exist_ok=True)
 
-    weights_path = str(results_dir / "weights" / "best.pt")
+        print(f"Evaluating {len(predictions)} predictions from {args.predictions}")
+        print(f"GT: {test_coco_json}")
 
-    print(f"Running inference with {weights_path}...")
-    if model_type in ("yolo11", "yolo26"):
-        test_images_dir = str(split_dir / "test" / "images")
-        raw_preds = run_yolo_inference(weights_path, test_images_dir, conf=args.conf)
-        # Map file paths to image IDs
-        coco_gt = COCO(test_coco_json)
-        path_to_id = {img["file_name"]: img["id"] for img in coco_gt.dataset["images"]}
-        predictions = []
-        for p in raw_preds:
-            img_id = path_to_id.get(p["_img_path"])
-            if img_id is None:
-                continue
-            predictions.append({
-                "image_id": img_id,
-                "category_id": p["category_id"],
-                "bbox": p["bbox"],
-                "score": p["score"],
-            })
-    elif model_type == "rfdetr":
-        for ckpt_name in ["checkpoint_best_total.pth", "checkpoint_best_ema.pth", "checkpoint_best_regular.pth"]:
-            candidate = results_dir / ckpt_name
-            if candidate.exists():
-                weights_path = str(candidate)
-                break
-        print(f"Using checkpoint: {weights_path}")
-        predictions = run_rfdetr_inference(weights_path, test_coco_json, conf=0.3)
+        overall = compute_map(test_coco_json, predictions)
+
+        metrics = {"overall": overall}
+        if test_manifest is not None:
+            breakdown = compute_breakdown_metrics(test_coco_json, predictions, test_manifest)
+            metrics.update(breakdown)
+
+        (eval_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
+        write_metrics_report(metrics, eval_dir / "metrics_report.md")
+        print(f"Eval complete. Report: {eval_dir / 'metrics_report.md'}")
+
+        if test_manifest is not None:
+            print("Computing per-image quality metrics...")
+            _run_image_quality_analysis(
+                test_coco_json=test_coco_json,
+                predictions=predictions,
+                eval_dir=eval_dir,
+                test_manifest=test_manifest,
+            )
+
+    elif args.config:
+        # --- Legacy mode: inference + eval in one pass ---
+        with open(args.config) as f:
+            config = yaml.safe_load(f)
+
+        exp_name = config["experiment_name"]
+        split_name = config["split"]
+        model_type = config["model"]
+
+        split_dir = PROJECT_ROOT / "data" / "splits" / split_name
+        test_coco_json = str(split_dir / "coco" / "test" / "_annotations.coco.json")
+        manifest_path = split_dir / "split_manifest.csv"
+        split_manifest = pd.read_csv(manifest_path)
+        test_manifest = split_manifest[split_manifest["split"] == "test"]
+
+        results_dir = PROJECT_ROOT / "results" / exp_name
+        eval_dir = results_dir / "eval"
+        eval_dir.mkdir(parents=True, exist_ok=True)
+
+        weights_path = str(results_dir / "weights" / "best.pt")
+
+        print(f"Running inference with {weights_path}...")
+        if model_type in ("yolo11", "yolo26"):
+            test_images_dir = str(split_dir / "test" / "images")
+            raw_preds = run_yolo_inference(weights_path, test_images_dir, conf=args.conf)
+            coco_gt = COCO(test_coco_json)
+            path_to_id = {img["file_name"]: img["id"] for img in coco_gt.dataset["images"]}
+            predictions = []
+            for p in raw_preds:
+                img_id = path_to_id.get(p["_img_path"])
+                if img_id is None:
+                    continue
+                predictions.append({
+                    "image_id": img_id,
+                    "category_id": p["category_id"],
+                    "bbox": p["bbox"],
+                    "score": p["score"],
+                })
+        elif model_type == "rfdetr":
+            for ckpt_name in ["checkpoint_best_total.pth", "checkpoint_best_ema.pth", "checkpoint_best_regular.pth"]:
+                candidate = results_dir / ckpt_name
+                if candidate.exists():
+                    weights_path = str(candidate)
+                    break
+            print(f"Using checkpoint: {weights_path}")
+            predictions = run_rfdetr_inference(weights_path, test_coco_json, conf=0.3)
+        else:
+            raise ValueError(f"Unknown model: {model_type}")
+
+        predictions = predictions_to_coco(predictions)
+
+        if args.enable_interclass_nms:
+            predictions = apply_interclass_nms(predictions, test_coco_json, args.nms_iou_thresh)
+
+        (eval_dir / "predictions.json").write_text(json.dumps(predictions, indent=2))
+
+        print("Computing metrics...")
+        overall = compute_map(test_coco_json, predictions)
+
+        breakdown = compute_breakdown_metrics(
+            test_coco_json,
+            predictions,
+            test_manifest,
+            min_annotations=config.get("min_annotations_for_sparse", 10),
+        )
+
+        metrics = {
+            "experiment": exp_name,
+            "model": config["model"],
+            "size": config["size"],
+            "split": split_name,
+            "overall": overall,
+            **breakdown,
+        }
+        (eval_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
+        write_metrics_report(metrics, eval_dir / "metrics_report.md")
+        print(f"Eval complete. Report: {eval_dir / 'metrics_report.md'}")
+
+        print("Computing per-image quality metrics...")
+        _run_image_quality_analysis(
+            test_coco_json=test_coco_json,
+            predictions=predictions,
+            eval_dir=eval_dir,
+            test_manifest=test_manifest,
+        )
+
     else:
-        raise ValueError(f"Unknown model: {model_type}")
-
-    predictions = predictions_to_coco(predictions)
-
-    if args.enable_interclass_nms:
-        predictions = apply_interclass_nms(predictions, test_coco_json, args.nms_iou_thresh)
-
-    (eval_dir / "predictions.json").write_text(json.dumps(predictions, indent=2))
-
-    print("Computing metrics...")
-    overall = compute_map(test_coco_json, predictions)
-
-    breakdown = compute_breakdown_metrics(
-        test_coco_json,
-        predictions,
-        test_manifest,
-        min_annotations=config.get("min_annotations_for_sparse", 10),
-    )
-
-    metrics = {
-        "experiment": exp_name,
-        "model": config["model"],
-        "size": config["size"],
-        "split": split_name,
-        "overall": overall,
-        **breakdown,
-    }
-    (eval_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
-    write_metrics_report(metrics, eval_dir / "metrics_report.md")
-    print(f"Eval complete. Report: {eval_dir / 'metrics_report.md'}")
-
-    # ------------------------------------------------------------------
-    # Per-image quality metrics + failure analysis
-    # ------------------------------------------------------------------
-    print("Computing per-image quality metrics...")
-    _run_image_quality_analysis(
-        test_coco_json=test_coco_json,
-        predictions=predictions,
-        eval_dir=eval_dir,
-        test_manifest=test_manifest,
-    )
+        parser.error("Provide either --predictions (recommended) or --config (legacy)")
 
 
 def _run_image_quality_analysis(

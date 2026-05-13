@@ -122,8 +122,13 @@ detection-tracking-pipeline/
 │   ├── track_video.py              # Standard HybridSORT tracking
 │   ├── track_video_predict.py      # Tracking + Kalman prediction + interclass NMS
 │   └── cross_modal_nms.py          # Cross-modal NMS module
+├── detection/
+│   └── detect.py                   # Detection inference (yolo, rfdetr, sahi)
+├── annotation_tools/
+│   ├── correct_tracks.py          # MOT track correction tool (OpenCV-based)
+│   └── README.md                  # Annotation tool usage guide
 ├── eval/
-│   ├── eval.py                     # Detection evaluation (inference + metrics + interclass NMS)
+│   ├── eval.py                     # Detection evaluation (metrics from predictions JSON)
 │   ├── eval_tracking.py            # Tracking evaluation (HOTA, MOTA, IDF1, IDsw, Frag, MT/ML)
 │   ├── sample_tracking_metrics.json # Schema for tracking eval JSON output
 │   ├── cross_modal_nms.py          # Cross-modal NMS module (eval copy)
@@ -151,13 +156,39 @@ conda run -n boat-tracker python track/track_video_predict.py \
     --enable-nms --nms-iou-thresh 0.5
 ```
 
-### Evaluation with interclass NMS
+### Detection Evaluation
+
+Two-step process: generate detections, then evaluate against ground truth.
+
+**Step 1 — Run inference**
+
+```bash
+# Standard YOLO
+conda run -n obj-det python detection/detect.py \
+    --weights weights/best.pt \
+    --gt-json data/splits/split_v7/coco/test/_annotations.coco.json \
+    --method yolo \
+    --out results/detections/yolo_baseline.json
+
+# SAHI (sliced inference — better for small objects)
+conda run -n obj-det python detection/detect.py \
+    --weights weights/best.pt \
+    --gt-json data/splits/split_v7/coco/test/_annotations.coco.json \
+    --method sahi --slice-size 640 --overlap-ratio 0.2 \
+    --out results/detections/sahi_640.json
+```
+
+**Step 2 — Evaluate**
 
 ```bash
 conda run -n obj-det python eval/eval.py \
-    --config configs/exp_yolo26l_v7_original.yaml \
-    --enable-interclass-nms --nms-iou-thresh 0.5
+    --predictions results/detections/yolo_baseline.json \
+    --gt-json data/splits/split_v7/coco/test/_annotations.coco.json \
+    --manifest data/splits/split_v7/split_manifest.csv \
+    -o results/eval/yolo_baseline
 ```
+
+Legacy mode (inference + eval in one pass) is still supported via `--config`.
 
 ### Tracking Evaluation
 
@@ -219,6 +250,8 @@ data/eval/gt/
 ```
 
 GT files use the same 9-column MOTChallenge format. See `eval/eval_tracking.py` header or `CLAUDE.md` for column definitions.
+
+To create GT annotations from tracker output, use the correction tool — see [`annotation_tools/README.md`](annotation_tools/README.md) for the full workflow.
 
 The JSON output schema is documented in `eval/sample_tracking_metrics.json`.
 

@@ -18,8 +18,12 @@ detection-tracking-pipeline/
 │   ├── track_video.py              # Standard HybridSORT tracking (detection every frame)
 │   ├── track_video_predict.py      # Tracking + Kalman prediction + interclass NMS
 │   └── cross_modal_nms.py          # Cross-modal NMS module
+├── detection/
+│   └── detect.py                   # Detection inference (yolo, rfdetr, sahi)
+├── annotation_tools/
+│   └── correct_tracks.py          # MOT track correction tool
 ├── eval/
-│   ├── eval.py                     # Detection evaluation (inference + metrics + interclass NMS)
+│   ├── eval.py                     # Detection evaluation (metrics from predictions JSON)
 │   ├── eval_tracking.py            # Tracking evaluation (HOTA, MOTA, IDF1, IDsw, Frag, MT/ML)
 │   ├── cross_modal_nms.py          # Cross-modal NMS module (eval copy)
 │   ├── compare_models.py           # Cross-experiment comparison

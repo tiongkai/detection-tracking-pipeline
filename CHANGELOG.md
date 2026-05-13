@@ -1,5 +1,62 @@
 # Changelog
 
+## Separate detection inference from evaluation + SAHI + latency profiling (2026-05-13)
+
+### Problem
+
+`eval/eval.py` coupled inference and evaluation in a single script. This meant:
+
+- Re-running expensive GPU inference every time you wanted to re-evaluate with different settings
+- No way to compare inference methods (standard vs SAHI) without modifying eval code
+- No latency measurement for assessing real-time viability
+
+### Solution
+
+Split inference into a new `detection/detect.py` script. The eval script now accepts pre-generated predictions JSON. Added per-image latency profiling to all inference methods.
+
+### Files
+
+#### `detection/detect.py` (NEW)
+
+- Three inference methods: `yolo`, `rfdetr`, `sahi`
+- `--method sahi` runs SAHI sliced inference with configurable `--slice-size`, `--overlap-ratio`, and `--sahi-model-type` (default: `ultralytics` for YOLO; `huggingface` for HF-hosted DETR models)
+- Per-image latency profiling: mean, median, P95, FPS (first image excluded as GPU warmup)
+- Output JSON includes `predictions`, `timing`, and `config` sections
+- `--enable-nms` applies cross-modal NMS before saving
+
+#### `eval/eval.py` (MODIFIED)
+
+- New mode: `--predictions <json> --gt-json <json> -o <dir>` evaluates pre-generated predictions
+- Reads timing stats from detection JSON and prints latency summary
+- Legacy mode: `--config <yaml>` still works (runs inference + eval in one pass)
+- Optional `--manifest` for per-source breakdown metrics
+
+### Usage
+
+```bash
+# Step 1: generate detections
+conda run -n obj-det python detection/detect.py \
+    --weights weights/best.pt \
+    --gt-json data/splits/split_v7/coco/test/_annotations.coco.json \
+    --method yolo \
+    --out results/detections/yolo_baseline.json
+
+# Step 1 (SAHI variant):
+conda run -n obj-det python detection/detect.py \
+    --weights weights/best.pt \
+    --gt-json data/splits/split_v7/coco/test/_annotations.coco.json \
+    --method sahi --slice-size 640 --overlap-ratio 0.2 \
+    --out results/detections/sahi_640.json
+
+# Step 2: evaluate
+conda run -n obj-det python eval/eval.py \
+    --predictions results/detections/yolo_baseline.json \
+    --gt-json data/splits/split_v7/coco/test/_annotations.coco.json \
+    -o results/eval/yolo_baseline
+```
+
+---
+
 ## Class-aware matching in tracking eval (2026-05-13)
 
 ### Problem

@@ -1,0 +1,38 @@
+{
+  "predictions": [
+    {
+      "image_id": 1,
+      "category_id": 0,
+      "bbox": [120.5, 200.3, 85.0, 60.2],
+      "score": 0.92
+    },
+    {
+      "image_id": 1,
+      "category_id": 6,
+      "bbox": [450.0, 180.5, 110.3, 75.8],
+      "score": 0.87
+    },
+    {
+      "image_id": 2,
+      "category_id": 2,
+      "bbox": [300.1, 350.0, 40.5, 90.3],
+      "score": 0.76
+    }
+  ],
+  "timing": {
+    "n_images": 1099,
+    "mean_ms": 12.3,
+    "median_ms": 11.8,
+    "std_ms": 2.1,
+    "min_ms": 9.5,
+    "max_ms": 25.4,
+    "p95_ms": 15.7,
+    "fps": 81.3
+  },
+  "config": {
+    "method": "yolo",
+    "weights": "weights/best.pt",
+    "conf": 0.001,
+    "enable_nms": false
+  }
+}
