@@ -8,6 +8,66 @@ Currently we evaluate tracking by visual inspection of output videos. This doesn
 
 ---
 
+## How to Run
+
+All commands run on the remote machine (`lenovo6`) where the GPU, weights, and eval data live. Use the `boat-tracker` conda environment for everything.
+
+### Step 1 — Generate tracker output (MOTChallenge format)
+
+```bash
+conda run -n boat-tracker python track/track_video_predict.py \
+    --weights weights/best.pt \
+    --source data/eval/clips \
+    --out results/tracker/baseline \
+    --conf 0.3 --iou 0.5 --ema-alpha 1.0 \
+    --max-coast 10 --coast-classes boat \
+    --enable-nms --nms-iou-thresh 0.5 \
+    --save-mot
+```
+
+This produces annotated videos and MOT text files in `results/tracker/baseline/mot/`.
+
+### Step 2 — Evaluate against ground truth
+
+```bash
+# Single config
+conda run -n boat-tracker python eval/eval_tracking.py \
+    --gt data/eval/gt \
+    --tracker results/tracker/baseline/mot \
+    -o results/tracker/eval
+
+# Compare two configs side-by-side
+conda run -n boat-tracker python eval/eval_tracking.py \
+    --gt data/eval/gt \
+    --tracker results/tracker/baseline/mot results/tracker/no_nms/mot \
+    --names baseline no_nms \
+    -o results/tracker/eval
+```
+
+### Running experiments (task 2.5)
+
+For each experiment, change the relevant parameter and output to a separate directory:
+
+```bash
+# Example: experiment 5 — no NMS
+conda run -n boat-tracker python track/track_video_predict.py \
+    --weights weights/best.pt \
+    --source data/eval/clips \
+    --out results/tracker/no_nms \
+    --conf 0.3 --iou 0.5 --ema-alpha 1.0 \
+    --max-coast 10 --coast-classes boat \
+    --save-mot
+```
+
+Then compare with the eval script using `--tracker` with multiple paths and `--names` to label them.
+
+### Prerequisites
+
+- **Step 1** works now — weights and clips are on the remote machine
+- **Step 2** requires GT annotations in `data/eval/gt/<clip_name>/gt.txt` (task 2.2 — not yet done)
+
+---
+
 ## Tasks
 
 ### 2.1 — Background reading (~2 days)
