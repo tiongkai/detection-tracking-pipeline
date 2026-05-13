@@ -2,6 +2,10 @@
 
 Detection and tracking pipeline for maritime surveillance across RGB and thermal domains.
 
+## Git practices
+
+Practices are not as strict here as in S&S standards, but we are still practicing trunk-based development; i.e. **create a new branch each time you're working on a new task**. Other than that, try to keep your work to informative branches e.g. `dev/fq-evaluator` or `fix/fr-scoring` and try to have informative commit messages e.g. `chore: copying over files` or `fix: updating typos and versioning` or `dev: implemented new scoring method`.
+
 ## Model
 
 **Architecture:** YOLOv26-L (Ultralytics, ~25M params)
