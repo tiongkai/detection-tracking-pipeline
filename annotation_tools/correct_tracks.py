@@ -320,7 +320,8 @@ class App:
         self.drag_tid = None
         self.drag_handle = None
         self.drag_orig_box = None
-        self._last_composed_shape = None  # (h, w) of last displayed image
+        self._drag_box = None  # active drag preview (x, y, w, h)
+        self._composed_size = None  # (w, h) of full-res composed image
 
     def _read_frame(self, idx: int):
         """Read a specific frame from the video (1-indexed)."""
@@ -331,38 +332,36 @@ class App:
     def _refresh(self):
         self.cached_frame = self._read_frame(self.frame_idx)
 
-    def _display(self, drag_box=None):
+    def _display(self):
         if self.cached_frame is None:
             return
         composed = self.renderer.compose(
             self.cached_frame, self.frame_idx, self.total_frames,
-            self.selected_tid, drag_box,
+            self.selected_tid, self._drag_box,
         )
 
         h, w = composed.shape[:2]
         bar = np.zeros((30, w, 3), dtype=np.uint8)
         bar[:] = (40, 40, 40)
-        status = "h/l=nav  H/L=skip10  <>=skip30  r=reassign  d=del box  x=del track  k=interp  u=undo  s=save  q=quit"
+        status = "arrows=nav  space=+10  bksp=-10  f=goto frame  r=reassign  d=del box  x=del track  k=interp  z/u=undo  s=save  q=quit"
         cv2.putText(bar, status, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 180, 180), 1)
         composed = np.vstack([composed, bar])
 
-        self._last_composed_shape = composed.shape[:2]
+        self._composed_size = (composed.shape[1], composed.shape[0])
         cv2.imshow(self.WINDOW, composed)
 
     def _scale_mouse(self, x: int, y: int) -> tuple[int, int]:
-        """Map window-space mouse coordinates to image-space coordinates."""
-        if self._last_composed_shape is None:
+        """Map mouse coordinates to image-space coordinates."""
+        if self._composed_size is None:
             return x, y
-        try:
-            rx, ry, rw, rh = cv2.getWindowImageRect(self.WINDOW)
-        except Exception:
-            return x, y
-        if rw <= 0 or rh <= 0:
-            return x, y
-        img_h, img_w = self._last_composed_shape
-        sx = img_w / rw
-        sy = img_h / rh
-        return int((x - rx) * sx), int((y - ry) * sy)
+        if not hasattr(self, "_mouse_debug_done"):
+            try:
+                rect = cv2.getWindowImageRect(self.WINDOW)
+            except Exception:
+                rect = "EXCEPTION"
+            print(f"  MOUSE DEBUG: raw=({x},{y}) rect={rect} img={self._composed_size}")
+            self._mouse_debug_done = True
+        return x, y
 
     def _goto_frame(self, idx: int):
         self.frame_idx = max(1, min(idx, self.total_frames))
@@ -397,22 +396,22 @@ class App:
                 text += chr(key)
 
     def _handle_key(self, key: int):
-        if key == 83 or key == ord("l"):
+        if key == 83:  # right arrow
             self._goto_frame(self.frame_idx + 1)
-        elif key == 81 or key == ord("h"):
+        elif key == 81:  # left arrow
             self._goto_frame(self.frame_idx - 1)
-        elif key == ord("L"):
+        elif key == 32:  # space — skip 10 forward
             self._goto_frame(self.frame_idx + 10)
-        elif key == ord("H"):
+        elif key == 8:  # backspace — skip 10 back
             self._goto_frame(self.frame_idx - 10)
-        elif key == ord("."):
-            self._goto_frame(self.frame_idx + 1)
-        elif key == ord(","):
-            self._goto_frame(self.frame_idx - 1)
-        elif key == ord(">"):
-            self._goto_frame(self.frame_idx + 30)
-        elif key == ord("<"):
-            self._goto_frame(self.frame_idx - 30)
+
+        elif key == ord("f"):
+            raw = self._input_popup("Go to frame:")
+            if raw is not None:
+                try:
+                    self._goto_frame(int(raw))
+                except ValueError:
+                    pass
 
         elif key == ord("g"):
             if self.selected_tid is not None and self.selected_tid in self.td.tracks:
@@ -450,7 +449,7 @@ class App:
                 self.dirty = True
                 print(f"  Interpolated track #{self.selected_tid}")
 
-        elif key == ord("u"):
+        elif key == ord("u") or key == ord("z"):
             if self.td.undo():
                 self.dirty = True
                 print("  Undo")
@@ -513,12 +512,9 @@ class App:
             dy = y - self.drag_start[1]
             ob = self.drag_orig_box
             if self.drag_handle == "move":
-                new_box = (ob[0] + dx, ob[1] + dy, ob[2], ob[3])
+                self._drag_box = (ob[0] + dx, ob[1] + dy, ob[2], ob[3])
             elif self.drag_handle == "br":
-                new_box = (ob[0], ob[1], max(10, ob[2] + dx), max(10, ob[3] + dy))
-            else:
-                return
-            self._display(drag_box=new_box)
+                self._drag_box = (ob[0], ob[1], max(10, ob[2] + dx), max(10, ob[3] + dy))
             return
 
         if event == cv2.EVENT_LBUTTONUP and self.dragging:
@@ -542,6 +538,7 @@ class App:
             self.drag_tid = None
             self.drag_handle = None
             self.drag_orig_box = None
+            self._drag_box = None
 
     # --- Main loop ---
 
