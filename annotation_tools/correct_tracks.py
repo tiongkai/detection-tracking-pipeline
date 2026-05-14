@@ -320,6 +320,7 @@ class App:
         self.drag_tid = None
         self.drag_handle = None
         self.drag_orig_box = None
+        self._last_composed_shape = None  # (h, w) of last displayed image
 
     def _read_frame(self, idx: int):
         """Read a specific frame from the video (1-indexed)."""
@@ -345,18 +346,55 @@ class App:
         cv2.putText(bar, status, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 180, 180), 1)
         composed = np.vstack([composed, bar])
 
+        self._last_composed_shape = composed.shape[:2]
         cv2.imshow(self.WINDOW, composed)
+
+    def _scale_mouse(self, x: int, y: int) -> tuple[int, int]:
+        """Map window-space mouse coordinates to image-space coordinates."""
+        if self._last_composed_shape is None:
+            return x, y
+        try:
+            rx, ry, rw, rh = cv2.getWindowImageRect(self.WINDOW)
+        except Exception:
+            return x, y
+        if rw <= 0 or rh <= 0:
+            return x, y
+        img_h, img_w = self._last_composed_shape
+        sx = img_w / rw
+        sy = img_h / rh
+        return int((x - rx) * sx), int((y - ry) * sy)
 
     def _goto_frame(self, idx: int):
         self.frame_idx = max(1, min(idx, self.total_frames))
         self._refresh()
 
-    def _prompt_id(self, prompt: str):
-        try:
-            val = input(f"\n  {prompt}: ")
-            return int(val)
-        except (ValueError, EOFError):
-            return None
+    def _input_popup(self, title: str) -> str | None:
+        """Show a small OpenCV popup to collect text input. Returns string or None if cancelled."""
+        WIN = "Input"
+        cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(WIN, 320, 90)
+        text = ""
+        while True:
+            popup = np.zeros((90, 320, 3), dtype=np.uint8)
+            popup[:] = (50, 50, 50)
+            cv2.putText(popup, title, (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+            cv2.rectangle(popup, (10, 32), (310, 60), (80, 80, 80), -1)
+            cv2.rectangle(popup, (10, 32), (310, 60), (150, 150, 150), 1)
+            cv2.putText(popup, text + "|", (15, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+            cv2.putText(popup, "Enter=confirm   Esc=cancel", (10, 80),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, (140, 140, 140), 1)
+            cv2.imshow(WIN, popup)
+            key = cv2.waitKey(50) & 0xFF
+            if key == 13:  # Enter
+                cv2.destroyWindow(WIN)
+                return text or None
+            elif key == 27:  # Esc
+                cv2.destroyWindow(WIN)
+                return None
+            elif key == 8:  # Backspace
+                text = text[:-1]
+            elif 32 <= key <= 126:  # all printable ASCII
+                text += chr(key)
 
     def _handle_key(self, key: int):
         if key == 83 or key == ord("l"):
@@ -383,12 +421,16 @@ class App:
 
         elif key == ord("r"):
             if self.selected_tid is not None:
-                new_id = self._prompt_id(f"Reassign track #{self.selected_tid} to ID")
-                if new_id is not None:
-                    self.td.reassign_id(self.selected_tid, new_id)
-                    self.selected_tid = new_id
-                    self.dirty = True
-                    print(f"  Reassigned to #{new_id}")
+                raw = self._input_popup(f"Reassign track #{self.selected_tid} to ID:")
+                if raw is not None:
+                    try:
+                        new_id = int(raw)
+                        self.td.reassign_id(self.selected_tid, new_id)
+                        self.selected_tid = new_id
+                        self.dirty = True
+                        print(f"  Reassigned to #{new_id}")
+                    except ValueError:
+                        pass
 
         elif key == ord("x"):
             if self.selected_tid is not None:
@@ -432,6 +474,7 @@ class App:
         return None, None
 
     def _on_mouse(self, event, x, y, flags, param):
+        x, y = self._scale_mouse(x, y)
         self.mouse_x = x
         self.mouse_y = y
         frame_w = self.cached_frame.shape[1] if self.cached_frame is not None else 0
@@ -503,7 +546,8 @@ class App:
     # --- Main loop ---
 
     def run(self):
-        cv2.namedWindow(self.WINDOW, cv2.WINDOW_AUTOSIZE)
+        cv2.namedWindow(self.WINDOW, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(self.WINDOW, 1280, 720)
         cv2.setMouseCallback(self.WINDOW, self._on_mouse)
         self._refresh()
 
@@ -516,8 +560,8 @@ class App:
 
             if key == ord("q"):
                 if self.dirty:
-                    resp = input("\n  Unsaved changes. Save before quit? (y/n): ")
-                    if resp.lower() == "y":
+                    resp = self._input_popup("Unsaved changes. Save? (y/n):")
+                    if resp and resp.lower() == "y":
                         self.td.save_mot(self.out_path)
                         print(f"  Saved to {self.out_path}")
                 break
