@@ -1,8 +1,3 @@
-# Backup original file
-cp eval/eval_tracking.py eval/eval_tracking.py.backup
-
-# Create the fixed version
-cat > eval/eval_tracking_fixed.py << 'EOF'
 """Tracking evaluation using TrackEval library. (FIXED VERSION)"""
 
 import argparse
@@ -694,4 +689,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-EOF
