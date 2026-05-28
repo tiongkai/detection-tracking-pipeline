@@ -1,9 +1,33 @@
-# Backup original file
-cp eval/eval_tracking.py eval/eval_tracking.py.backup
+"""Tracking evaluation using TrackEval library.
 
-# Create the fixed version
-cat > eval/eval_tracking_fixed.py << 'EOF'
-"""Tracking evaluation using TrackEval library. (FIXED VERSION)"""
+Uses TrackEval (https://github.com/JonathonLuiten/TrackEval) for metric computation.
+
+Directory layout for TrackEval:
+
+    gt_dir/
+        <clip_name>/
+            gt/
+                gt.txt
+
+    tracker_dir/
+        <clip_name>.txt
+
+TrackEval expects:
+- GT: seq_name/gt/gt.txt
+- Tracker: data/trackers/mot_challenge/TRACKER_NAME/data/seq_name.txt
+
+Usage:
+    # Single tracker with plots
+    python eval/eval_tracking.py --gt data/eval/gt/mot --tracker results/exp/mot --plot -o results/eval
+
+    # Compare two trackers (plots will use custom metrics)
+    python eval/eval_tracking.py --gt data/eval/gt/mot \\
+        --tracker results/exp_baseline/mot results/exp_tuned/mot \\
+        --names baseline tuned --plot -o results/eval
+
+    # Using config file
+    python eval/eval_tracking.py --config results/experiments/exp00_baseline/config_00.yaml --plot
+"""
 
 import argparse
 import json
@@ -16,6 +40,7 @@ from collections import defaultdict
 
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt  # PLOT CHANGE: Added matplotlib
 
 
 # ---------------------------------------------------------------------------
@@ -41,25 +66,30 @@ def ensure_trackeval():
 
 
 def prepare_trackeval_format(gt_dir, tracker_dir, tracker_name, temp_dir):
-    """Convert your data to TrackEval expected format."""
+    """Convert your data to TrackEval expected format.
+    
+    TrackEval expects:
+        GT:   {temp_dir}/gt/mot_challenge/{seq_name}/gt/gt.txt
+        Tracker: {temp_dir}/trackers/mot_challenge/{tracker_name}/data/{seq_name}.txt
+    """
     temp_dir = Path(temp_dir)
     gt_base = temp_dir / "gt" / "mot_challenge"
     tracker_base = temp_dir / "trackers" / "mot_challenge" / tracker_name / "data"
     
+    # Copy ground truth files
     gt_dir = Path(gt_dir)
     seqs_found = []
     
+    # Find all gt.txt files
     for gt_file in gt_dir.rglob("gt.txt"):
-        parent = gt_file.parent
-        if parent.name == "gt":
-            seq_name = parent.parent.name
-        else:
-            seq_name = parent.name
+        # Expected: gt_dir/seq_name/gt/gt.txt
+        seq_name = gt_file.parent.parent.name
         dest = gt_base / seq_name / "gt" / "gt.txt"
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(gt_file, dest)
         seqs_found.append(seq_name)
     
+    # Copy tracker files
     tracker_dir = Path(tracker_dir)
     tracker_base.mkdir(parents=True, exist_ok=True)
     
@@ -78,23 +108,26 @@ def run_trackeval(temp_dir, tracker_name, iou_threshold=0.5, classes_to_eval=Non
     """Run TrackEval and return results."""
     from trackeval import Evaluator, get_dataset, get_default_dataset_config
     
+    # Configure dataset
     dataset_config = get_default_dataset_config()
     dataset_config.GT_FOLDER = str(temp_dir / "gt")
     dataset_config.TRACKERS_FOLDER = str(temp_dir / "trackers")
     dataset_config.OUTPUT_FOLDER = str(temp_dir / "output")
     dataset_config.TRACKERS_TO_EVAL = [tracker_name]
-    dataset_config.CLASSES_TO_EVAL = classes_to_eval or ["pedestrian"]
+    dataset_config.CLASSES_TO_EVAL = classes_to_eval or ["pedestrian"]  # Default class
     dataset_config.SPLIT_TO_EVAL = "mot_challenge"
     dataset_config.USE_PARALLEL = False
     dataset_config.PRINT_CONFIG = False
     dataset_config.PRINT_ONLY_COMBINED = True
     
+    # Configure metrics
     metrics_config = {
         "METRICS": ["HOTA", "CLEAR", "Identity", "VACE"],
         "THRESHOLD": iou_threshold,
         "PRINT_CONFIG": False,
     }
     
+    # Run evaluation
     dataset = get_dataset(dataset_config)
     evaluator = Evaluator(dataset, metrics_config)
     results = evaluator.evaluate()
@@ -103,7 +136,7 @@ def run_trackeval(temp_dir, tracker_name, iou_threshold=0.5, classes_to_eval=Non
 
 
 def parse_trackeval_results(results, tracker_name):
-    """Extract metrics from TrackEval results."""
+    """Extract metrics from TrackEval results into our standard format."""
     metrics = {
         "MOTA": 0.0, "MOTP": 0.0, "IDF1": 0.0, "HOTA": 0.0,
         "DetA": 0.0, "AssA": 0.0, "IDsw": 0, "Frag": 0,
@@ -116,6 +149,7 @@ def parse_trackeval_results(results, tracker_name):
     
     tracker_res = results[tracker_name]
     
+    # CLEAR metrics
     if "CLEAR" in tracker_res:
         clear = tracker_res["CLEAR"]
         metrics["MOTA"] = clear.get("MOTA", 0.0)
@@ -129,15 +163,18 @@ def parse_trackeval_results(results, tracker_name):
         if metrics["TP"] + metrics["FN"] > 0:
             metrics["Recall"] = metrics["TP"] / (metrics["TP"] + metrics["FN"])
     
+    # Identity metrics
     if "Identity" in tracker_res:
         metrics["IDF1"] = tracker_res["Identity"].get("IDF1", 0.0)
     
+    # HOTA metrics
     if "HOTA" in tracker_res:
         hota = tracker_res["HOTA"]
         metrics["HOTA"] = hota.get("HOTA", 0.0)
         metrics["DetA"] = hota.get("DetA", 0.0)
         metrics["AssA"] = hota.get("AssA", 0.0)
     
+    # VACE metrics (for MT/ML/Frag)
     if "VACE" in tracker_res:
         vace = tracker_res["VACE"]
         metrics["Frag"] = int(vace.get("Frag", 0))
@@ -152,7 +189,7 @@ def parse_trackeval_results(results, tracker_name):
 # ---------------------------------------------------------------------------
 
 def load_mot(path):
-    """Load MOT-format file."""
+    """Load MOT-format file. Returns {frame: [(id, x, y, w, h, conf, cls, vis), ...]}."""
     data = defaultdict(list)
     with open(path) as f:
         for line in f:
@@ -171,37 +208,21 @@ def load_mot(path):
 
 
 def discover_sequences(gt_dir, tracker_dir):
-    """Match GT sequences to tracker output files by clip name.
-    
-    Handles both:
-        - seq_name/gt/gt.txt (standard MOT)
-        - seq_name/gt.txt (flat structure)
-    """
+    """Match GT sequences to tracker output files by clip name."""
     gt_dir, tracker_dir = Path(gt_dir), Path(tracker_dir)
-    
-    gt_seqs = {}
-    for gt_file in sorted(gt_dir.rglob("gt.txt")):
-        parent = gt_file.parent
-        # If parent is named 'gt', go up one more level
-        if parent.name == "gt":
-            seq_name = parent.parent.name
-        else:
-            seq_name = parent.name
-        gt_seqs[seq_name] = gt_file
+    gt_seqs = {f.parent.name: f for f in sorted(gt_dir.rglob("gt.txt"))}
 
     matched = []
     for name, gt_file in gt_seqs.items():
         tf = tracker_dir / f"{name}.txt"
         if tf.exists():
             matched.append((name, gt_file, tf))
-            print(f"  ✓ {name}: matched")
         else:
-            print(f"  ✗ {name}: no tracker output (expected {tf})")
+            print(f"  WARNING: no tracker output for '{name}', skipping")
 
     if not matched:
         raise FileNotFoundError(
-            f"No matching sequences.\n  GT has: {list(gt_seqs.keys())}\n  Tracker dir: {tracker_dir}\n"
-            f"Tracker files: {list(tracker_dir.glob('*.txt'))}"
+            f"No matching sequences.\n  GT has: {list(gt_seqs.keys())}\n  Tracker dir: {tracker_dir}"
         )
     return matched
 
@@ -216,15 +237,18 @@ CLASS_NAMES = {
 
 
 def _base_class(cls_id):
+    """Strip domain suffix to get the base object type."""
     name = CLASS_NAMES.get(cls_id, str(cls_id))
     return name.replace("-rgb", "").replace("-thermal", "")
 
 
 def classes_compatible(cls_a, cls_b):
+    """True if two class IDs refer to the same object type (possibly different domains)."""
     return _base_class(cls_a) == _base_class(cls_b)
 
 
 def iou_matrix(boxes_a, boxes_b):
+    """IoU between two sets of (x, y, w, h) boxes. Returns (N, M) array."""
     a = np.asarray(boxes_a, dtype=np.float64)
     b = np.asarray(boxes_b, dtype=np.float64)
     a_x2 = a[:, 0] + a[:, 2]
@@ -245,6 +269,7 @@ def iou_matrix(boxes_a, boxes_b):
 
 
 def match_frames(gt_data, pred_data, iou_thresh):
+    """Match GT to predictions per frame via Hungarian assignment at the given IoU threshold."""
     all_frames = sorted(set(gt_data.keys()) | set(pred_data.keys()))
     frame_results = []
 
@@ -291,12 +316,143 @@ def match_frames(gt_data, pred_data, iou_thresh):
     return frame_results
 
 
+# PLOT CHANGE: New function to compute per-frame errors
+def compute_per_frame_errors(frame_results):
+    """
+    Extract per-frame TP/FP/FN/IDsw from match_frames output.
+    
+    Args:
+        frame_results: List from match_frames()
+        
+    Returns:
+        List of dicts with per-frame error counts
+    """
+    prev_match = {}  # track previous match for each GT ID
+    per_frame = []
+    
+    for fr in frame_results:
+        matches = fr["matches"]
+        tp = len(matches)
+        fp = len(fr["fp_ids"])
+        fn = len(fr["fn_ids"])
+        
+        # Count ID switches in this frame (same logic as compute_clear)
+        idsw = 0
+        cur_match = {}
+        for gt_id, pred_id, _ in matches:
+            cur_match[gt_id] = pred_id
+            if gt_id in prev_match and prev_match[gt_id] != pred_id:
+                idsw += 1
+        
+        per_frame.append({
+            "frame": fr["frame"],
+            "tp": tp,
+            "fp": fp,
+            "fn": fn,
+            "idsw": idsw,
+            "n_gt": fr["n_gt"],
+        })
+        prev_match = cur_match
+    
+    return per_frame
+
+
+# PLOT CHANGE: New plotting function
+def plot_error_timeline(per_frame_errors, clip_name, out_path):
+    """
+    Generate PNG timeline plot for a single clip.
+    
+    Args:
+        per_frame_errors: List from compute_per_frame_errors()
+        clip_name: Name of the clip (used in title)
+        out_path: Path where to save the PNG
+    """
+    if not per_frame_errors:
+        print(f"  No frame data for {clip_name}, skipping plot")
+        return
+    
+    frames = [e["frame"] for e in per_frame_errors]
+    tp_counts = [e["tp"] for e in per_frame_errors]
+    gt_counts = [e["n_gt"] for e in per_frame_errors]
+    fp_counts = [e["fp"] for e in per_frame_errors]
+    fn_counts = [e["fn"] for e in per_frame_errors]
+    
+    # Find frames with ID switches
+    idsw_frames = []
+    idsw_counts = []
+    for e in per_frame_errors:
+        if e["idsw"] > 0:
+            idsw_frames.append(e["frame"])
+            idsw_counts.append(e["idsw"])
+    
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 6), sharex=True)
+    
+    # Top subplot: GT vs TP (detection performance)
+    ax1.plot(frames, gt_counts, 'b-', label='GT objects', linewidth=1.5)
+    ax1.plot(frames, tp_counts, 'g-', label='Matched (TP)', linewidth=1.5)
+    
+    # Shaded area shows detection failures (GT but no match)
+    ax1.fill_between(frames, gt_counts, tp_counts, 
+                      where=(np.array(gt_counts) > np.array(tp_counts)), 
+                      alpha=0.3, color='red', label='Missed detections')
+    
+    ax1.set_ylabel('Object count')
+    ax1.legend(loc='upper right')
+    ax1.grid(True, alpha=0.3)
+    ax1.set_ylim(bottom=0)
+    
+    # Bottom subplot: FP/FN bars + ID switch markers
+    bar_width = max(1, len(frames) // 500)  # Adaptive bar width for long sequences
+    x_positions = frames
+    
+    # Stacked bars: FP on bottom, FN on top (helps see total errors)
+    ax2.bar(x_positions, fp_counts, width=bar_width, color='orange', alpha=0.7, 
+            label='False Positives (FP)', align='center')
+    ax2.bar(x_positions, fn_counts, width=bar_width, color='red', alpha=0.7, 
+            label='False Negatives (FN)', align='center', bottom=fp_counts)
+    
+    # ID switch markers (triangles at the top of the plot)
+    if idsw_frames:
+        max_y = max(max(fp_counts + fn_counts) if (fp_counts + fn_counts) else 1, 5)
+        marker_y = max_y * 1.1
+        ax2.scatter(idsw_frames, [marker_y] * len(idsw_frames), 
+                   marker='^', s=80, c='purple', zorder=5, 
+                   label=f'ID switches (n={len(idsw_frames)})')
+        
+        # Add count labels for multiple switches at same frame
+        from collections import Counter
+        frame_counts = Counter(idsw_frames)
+        for frame, count in frame_counts.items():
+            if count > 1:
+                ax2.annotate(str(count), (frame, marker_y * 1.05),
+                            ha='center', fontsize=9, color='purple', fontweight='bold')
+    
+    ax2.set_xlabel('Frame number')
+    ax2.set_ylabel('Error count')
+    ax2.legend(loc='upper right')
+    ax2.grid(True, alpha=0.3)
+    ax2.set_ylim(bottom=0)
+    
+    # Overall title
+    plt.suptitle(f'Tracking Error Timeline: {clip_name}', fontsize=14, y=1.02)
+    plt.tight_layout()
+    
+    # Save
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  Plot saved: {out_path}")
+
+
 def compute_clear(frame_results):
+    """CLEAR MOT metrics: MOTA, MOTP, FP, FN, ID switches."""
     total_tp = 0
     total_fp = 0
     total_fn = 0
     total_idsw = 0
     sum_iou = 0.0
+
     prev_match = {}
 
     for fr in frame_results:
@@ -334,6 +490,7 @@ def compute_clear(frame_results):
 
 
 def compute_track_quality(gt_data, frame_results):
+    """Fragmentation count, Mostly Tracked / Partially Tracked / Mostly Lost."""
     gt_frames = defaultdict(set)
     for frame, entries in gt_data.items():
         for e in entries:
@@ -381,6 +538,7 @@ def compute_track_quality(gt_data, frame_results):
 
 
 def compute_identity(gt_data, pred_data, frame_results):
+    """IDF1 — measures how consistently the correct ID is maintained."""
     pair_tp = defaultdict(int)
     gt_total = defaultdict(int)
     pred_total = defaultdict(int)
@@ -433,6 +591,7 @@ def compute_identity(gt_data, pred_data, frame_results):
 
 
 def compute_hota(gt_data, pred_data, thresholds=None):
+    """HOTA — Higher Order Tracking Accuracy."""
     if thresholds is None:
         thresholds = np.arange(0.05, 1.0, 0.05)
 
@@ -485,8 +644,15 @@ def compute_hota(gt_data, pred_data, thresholds=None):
     }
 
 
+# PLOT CHANGE: Modified to return per-frame data
 def evaluate_sequence_custom(gt_data, pred_data, iou_threshold=0.5):
+    """Compute all metrics for a single sequence using custom implementation.
+    
+    Returns:
+        tuple: (metrics_dict, per_frame_errors_list)
+    """
     frame_results = match_frames(gt_data, pred_data, iou_threshold)
+    per_frame_errors = compute_per_frame_errors(frame_results)  # NEW
     clear = compute_clear(frame_results)
     quality = compute_track_quality(gt_data, frame_results)
     identity = compute_identity(gt_data, pred_data, frame_results)
@@ -495,13 +661,21 @@ def evaluate_sequence_custom(gt_data, pred_data, iou_threshold=0.5):
     precision = clear["TP"] / (clear["TP"] + clear["FP"]) if (clear["TP"] + clear["FP"]) > 0 else 0
     recall = clear["TP"] / (clear["TP"] + clear["FN"]) if (clear["TP"] + clear["FN"]) > 0 else 0
 
-    return {**clear, **quality, **identity, **hota, "Precision": precision, "Recall": recall}
+    metrics = {**clear, **quality, **identity, **hota, "Precision": precision, "Recall": recall}
+    return metrics, per_frame_errors  # CHANGED: return both
 
 
+# PLOT CHANGE: Modified to preserve per-frame data
 def evaluate_tracker_custom(gt_dir, tracker_dir, iou_threshold=0.5):
+    """Evaluate a tracker across all sequences using custom implementation.
+    
+    Returns:
+        dict: Contains 'per_sequence', 'overall', and 'per_frame' keys
+    """
     sequences = discover_sequences(gt_dir, tracker_dir)
 
     per_seq = {}
+    per_seq_frames = {}  # NEW: store per-frame errors
     all_gt, all_pred = {}, {}
     frame_offset = 0
 
@@ -509,7 +683,9 @@ def evaluate_tracker_custom(gt_dir, tracker_dir, iou_threshold=0.5):
         gt_data = load_mot(gt_file)
         pred_data = load_mot(tracker_file)
         print(f"  {seq_name}: {len(gt_data)} GT frames, {len(pred_data)} tracker frames")
-        per_seq[seq_name] = evaluate_sequence_custom(gt_data, pred_data, iou_threshold)
+        metrics, per_frame = evaluate_sequence_custom(gt_data, pred_data, iou_threshold)  # CHANGED
+        per_seq[seq_name] = metrics
+        per_seq_frames[seq_name] = per_frame  # NEW: store per-frame data
 
         max_frame = max(
             max(gt_data.keys(), default=0),
@@ -521,18 +697,23 @@ def evaluate_tracker_custom(gt_dir, tracker_dir, iou_threshold=0.5):
             all_pred[f + frame_offset] = entries
         frame_offset += max_frame + 1
 
-    overall = evaluate_sequence_custom(all_gt, all_pred, iou_threshold)
+    overall_metrics, _ = evaluate_sequence_custom(all_gt, all_pred, iou_threshold)  # CHANGED
     for key in ("MT", "ML", "PT", "GT_tracks"):
-        overall[key] = sum(r[key] for r in per_seq.values())
+        overall_metrics[key] = sum(r[key] for r in per_seq.values())
     
-    return {"per_sequence": per_seq, "overall": overall}
+    return {
+        "per_sequence": per_seq, 
+        "overall": overall_metrics,
+        "per_frame": per_seq_frames  # NEW: include per-frame data
+    }
 
 
 # ---------------------------------------------------------------------------
-# Main Evaluation Function
+# Main Evaluation Function (Auto-selects TrackEval or custom)
 # ---------------------------------------------------------------------------
 
 def evaluate_tracker(gt_dir, tracker_dir, iou_threshold=0.5, use_trackeval=True):
+    """Evaluate a tracker. Uses TrackEval if available, falls back to custom implementation."""
     tracker_name = Path(tracker_dir).name
     
     if use_trackeval and ensure_trackeval():
@@ -552,6 +733,7 @@ def evaluate_tracker(gt_dir, tracker_dir, iou_threshold=0.5, use_trackeval=True)
             print(f"  TrackEval failed: {e}")
             print("  Falling back to custom implementation...")
     
+    # Fallback to custom implementation
     print("  Using custom metrics implementation...")
     return evaluate_tracker_custom(gt_dir, tracker_dir, iou_threshold)
 
@@ -570,6 +752,7 @@ def _fmt(val):
 
 
 def format_table(results_list, names):
+    """Markdown comparison table across tracker configs."""
     header = "| Config | " + " | ".join(SUMMARY_COLS) + " |"
     sep = "|" + "|".join(["--------"] * (len(SUMMARY_COLS) + 1)) + "|"
     rows = [header, sep]
@@ -584,6 +767,7 @@ def format_table(results_list, names):
 
 
 def format_per_sequence(results, name):
+    """Per-sequence breakdown table."""
     if not results or not results.get("per_sequence"):
         return ""
     
@@ -609,10 +793,12 @@ def write_report(results_list, names, out_dir):
         lines.append(format_per_sequence(res, name))
         lines.append("")
     
+    # Save detailed results
     for name, res in zip(names, results_list):
         if res:
             (out_dir / f"tracking_metrics_{name}.json").write_text(json.dumps(res, indent=2))
     
+    # Save CSV summary
     df_data = {}
     for name, res in zip(names, results_list):
         if res:
@@ -641,6 +827,8 @@ def main():
     parser.add_argument("-o", "--out", default=None, help="Output directory for report files")
     parser.add_argument("--no-trackeval", action="store_true",
                         help="Force use of custom metrics instead of TrackEval")
+    parser.add_argument("--plot", action="store_true",  # PLOT CHANGE: Added
+                        help="Generate per-clip error timeline plots (forces custom metrics)")
     args = parser.parse_args()
 
     gt = args.gt
@@ -674,7 +862,12 @@ def main():
     if len(names) != len(tracker_dirs):
         parser.error("--names count must match --tracker count")
 
+    # PLOT CHANGE: Force use of custom metrics when --plot is requested
     use_trackeval = not args.no_trackeval
+    if args.plot and use_trackeval:
+        print("\n⚠️  --plot requires custom metrics to access per-frame data")
+        print("   Forcing --no-trackeval for this run\n")
+        use_trackeval = False
 
     results_list = []
     for name, tdir in zip(names, tracker_dirs):
@@ -690,8 +883,39 @@ def main():
 
     if out:
         write_report(results_list, names, out)
+        
+        # PLOT CHANGE: Generate plots if requested
+        if args.plot:
+            print("\n" + "="*60)
+            print("Generating error timeline plots...")
+            print("="*60)
+            
+            # Re-evaluate with custom implementation if we don't have per_frame data
+            final_results_list = []
+            for name, res, tdir in zip(names, results_list, tracker_dirs):
+                if res and "per_frame" in res:
+                    # Already have per-frame data (from custom implementation)
+                    final_results_list.append(res)
+                else:
+                    # Need to re-run with custom implementation
+                    print(f"\nRe-evaluating {name} with custom implementation for plots...")
+                    custom_res = evaluate_tracker_custom(gt, tdir, iou_threshold)
+                    final_results_list.append(custom_res)
+            
+            # Generate plots
+            plot_dir = Path(out) / "plots"
+            plot_dir.mkdir(parents=True, exist_ok=True)
+            
+            for name, res in zip(names, final_results_list):
+                if res and "per_frame" in res:
+                    for seq_name, per_frame in res["per_frame"].items():
+                        plot_path = plot_dir / f"{name}_{seq_name}.png"
+                        plot_error_timeline(per_frame, seq_name, plot_path)
+                elif res is None:
+                    print(f"  No results for {name}, skipping plots")
+            
+            print(f"\nPlots saved to: {plot_dir}")
 
 
 if __name__ == "__main__":
     main()
-EOF
