@@ -38,6 +38,8 @@ import tempfile
 from pathlib import Path
 from collections import defaultdict
 
+import csv
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt  # PLOT CHANGE: Added matplotlib
@@ -114,7 +116,7 @@ def run_trackeval(temp_dir, tracker_name, iou_threshold=0.5, classes_to_eval=Non
     dataset_config.TRACKERS_FOLDER = str(temp_dir / "trackers")
     dataset_config.OUTPUT_FOLDER = str(temp_dir / "output")
     dataset_config.TRACKERS_TO_EVAL = [tracker_name]
-    dataset_config.CLASSES_TO_EVAL = classes_to_eval or ["pedestrian"]  # Default class
+    dataset_config.CLASSES_TO_EVAL = classes_to_eval if classes_to_eval is not None else ["pedestrian"]
     dataset_config.SPLIT_TO_EVAL = "mot_challenge"
     dataset_config.USE_PARALLEL = False
     dataset_config.PRINT_CONFIG = False
@@ -413,7 +415,8 @@ def plot_error_timeline(per_frame_errors, clip_name, out_path):
     
     # ID switch markers (triangles at the top of the plot)
     if idsw_frames:
-        max_y = max(max(fp_counts + fn_counts) if (fp_counts + fn_counts) else 1, 5)
+        max_y = max((f + n for f, n in zip(fp_counts, fn_counts)), default=1)
+        max_y = max(max_y, 5)
         marker_y = max_y * 1.1
         ax2.scatter(idsw_frames, [marker_y] * len(idsw_frames), 
                    marker='^', s=80, c='purple', zorder=5, 
@@ -443,6 +446,19 @@ def plot_error_timeline(per_frame_errors, clip_name, out_path):
     plt.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"  Plot saved: {out_path}")
+
+
+def save_per_frame_csv(per_frame_errors, out_path):
+    """Write per-frame error counts to CSV alongside the timeline plot."""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = ["frame", "n_gt", "tp", "fp", "fn", "idsw"]
+    with open(out_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in per_frame_errors:
+            writer.writerow({k: row[k] for k in fieldnames})
+    print(f"  Frame data: {out_path}")
 
 
 def compute_clear(frame_results):
@@ -712,21 +728,21 @@ def evaluate_tracker_custom(gt_dir, tracker_dir, iou_threshold=0.5):
 # Main Evaluation Function (Auto-selects TrackEval or custom)
 # ---------------------------------------------------------------------------
 
-def evaluate_tracker(gt_dir, tracker_dir, iou_threshold=0.5, use_trackeval=True):
+def evaluate_tracker(gt_dir, tracker_dir, iou_threshold=0.5, use_trackeval=True, classes_to_eval=None):
     """Evaluate a tracker. Uses TrackEval if available, falls back to custom implementation."""
     tracker_name = Path(tracker_dir).name
-    
+
     if use_trackeval and ensure_trackeval():
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
                 seqs = prepare_trackeval_format(gt_dir, tracker_dir, tracker_name, temp_dir)
-                
+
                 if not seqs:
                     print(f"  WARNING: No matching sequences for {tracker_name}")
                     return None
-                
+
                 print(f"  Found {len(seqs)} sequences")
-                results = run_trackeval(temp_dir, tracker_name, iou_threshold)
+                results = run_trackeval(temp_dir, tracker_name, iou_threshold, classes_to_eval=classes_to_eval)
                 metrics = parse_trackeval_results(results, tracker_name)
                 return {"overall": metrics, "per_sequence": {}}
         except Exception as e:
@@ -827,6 +843,9 @@ def main():
     parser.add_argument("-o", "--out", default=None, help="Output directory for report files")
     parser.add_argument("--no-trackeval", action="store_true",
                         help="Force use of custom metrics instead of TrackEval")
+    parser.add_argument("--trackeval-classes", nargs="+", default=None,
+                        help="Classes to evaluate with TrackEval (default: pedestrian). "
+                             "Only relevant when TrackEval is used (not --no-trackeval).")
     parser.add_argument("--plot", action="store_true",  # PLOT CHANGE: Added
                         help="Generate per-clip error timeline plots (forces custom metrics)")
     args = parser.parse_args()
@@ -872,7 +891,7 @@ def main():
     results_list = []
     for name, tdir in zip(names, tracker_dirs):
         print(f"\nEvaluating: {name} ({tdir})")
-        result = evaluate_tracker(gt, tdir, iou_threshold, use_trackeval)
+        result = evaluate_tracker(gt, tdir, iou_threshold, use_trackeval, classes_to_eval=args.trackeval_classes)
         results_list.append(result)
 
     print("\n" + format_table(results_list, names))
@@ -910,7 +929,9 @@ def main():
                 if res and "per_frame" in res:
                     for seq_name, per_frame in res["per_frame"].items():
                         plot_path = plot_dir / f"{name}_{seq_name}.png"
+                        csv_path = plot_dir / f"{name}_{seq_name}.csv"
                         plot_error_timeline(per_frame, seq_name, plot_path)
+                        save_per_frame_csv(per_frame, csv_path)
                 elif res is None:
                     print(f"  No results for {name}, skipping plots")
             
