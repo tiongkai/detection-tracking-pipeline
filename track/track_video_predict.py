@@ -29,6 +29,18 @@ from ultralytics import YOLO
 from cross_modal_nms import cross_modal_nms
 
 
+class _NoCMC:
+    """No-op camera-motion compensation: always returns an identity warp.
+
+    Used to disable HybridSORT's ECC (cv2.findTransformECC) motion
+    compensation, which runs on CPU every frame and is unnecessary for
+    static/fixed cameras.
+    """
+
+    def apply(self, img, dets):
+        return np.eye(3)
+
+
 def get_color(track_id: int) -> tuple:
     h = hashlib.md5(str(track_id).encode()).digest()
     return int(h[0]), int(h[1]), int(h[2])
@@ -350,7 +362,8 @@ def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="
         tracker_iou=0.15, max_age=180, alpha=0.7, longterm_bank_length=150,
         longterm_reid_weight=0.25, longterm_reid_correction_thresh=0.5,
         longterm_reid_correction_thresh_low=0.5,
-        no_video=False, reid_weights="clip_veri.pt"):
+        no_video=False, reid_weights="clip_veri.pt", no_cmc=False,
+        with_reid=True, with_longterm_reid=True):
     model = YOLO(weights)
     class_names = model.names
 
@@ -419,11 +432,18 @@ def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="
             alpha=alpha,
             longterm_bank_length=longterm_bank_length,
             longterm_reid_weight=longterm_reid_weight,
-            with_longterm_reid=True,
-            with_longterm_reid_correction=True,
+            with_reid=with_reid,
+            with_longterm_reid=with_longterm_reid,
+            with_longterm_reid_correction=with_longterm_reid,
             longterm_reid_correction_thresh=longterm_reid_correction_thresh,
             longterm_reid_correction_thresh_low=longterm_reid_correction_thresh_low,
         )
+
+        if no_cmc:
+            # Replace ECC camera-motion compensation with a no-op (identity warp).
+            # ECC runs cv2.findTransformECC on CPU every frame — a major cost for
+            # static/fixed cameras where motion compensation is unnecessary.
+            tracker.cmc = _NoCMC()
 
         mot_path = str(mot_dir / f"{name}.txt") if mot_dir else None
 
@@ -496,6 +516,15 @@ if __name__ == "__main__":
                         help="Skip video rendering — timing and MOT output only")
     parser.add_argument("--reid-weights", default=None,
                         help="Path to ReID model weights (default: clip_veri.pt)")
+    parser.add_argument("--no-cmc", action="store_true",
+                        help="Disable ECC camera-motion compensation (no-op warp). "
+                             "Speeds up tracking for static/fixed cameras.")
+    parser.add_argument("--longterm-bank-length", type=int, default=None,
+                        help="Override long-term ReID embedding bank depth (default 150 from config)")
+    parser.add_argument("--no-longterm-reid", action="store_true",
+                        help="Disable long-term ReID bank + correction (ablation)")
+    parser.add_argument("--no-reid", action="store_true",
+                        help="Disable ReID entirely — no crop extraction or embeddings (ablation)")
     parser.add_argument("--device", default=None, help="Torch device")
     args = parser.parse_args()
 
@@ -555,6 +584,10 @@ if __name__ == "__main__":
     if args.save_mot: p["save_mot"] = True
     if args.no_video: p["no_video"] = True
     if args.reid_weights is not None: p["reid_weights"] = args.reid_weights
+    if args.no_cmc: p["no_cmc"] = True
+    if args.longterm_bank_length is not None: p["longterm_bank_length"] = args.longterm_bank_length
+    if args.no_longterm_reid: p["with_longterm_reid"] = False
+    if args.no_reid: p["with_reid"] = False
     if args.device is not None: p["device"] = args.device
 
     # Resolve output directory: CLI > config parent dir > error
