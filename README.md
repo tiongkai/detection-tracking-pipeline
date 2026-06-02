@@ -255,9 +255,89 @@ To create GT annotations from tracker output, use the correction tool — see [`
 
 The JSON output schema is documented in `eval/sample_tracking_metrics.json`.
 
+### Running with Experiment Config
+
+Use a YAML config to drive tracking with specific parameters. The config sets tracker hyperparameters, detection settings, and NMS options.
+
+```bash
+# Run tracking with exp09 (NMS enabled) config — outputs video + MOT + timing
+python track/track_video_predict.py \
+    --config configs/tracking_eval.yaml \
+    --weights weights/best.pt \
+    --source data/eval/vws-eval-set \
+    --save-mot
+```
+
+Output structure:
+
+```
+<config_parent_dir>/
+├── <clip_name>.mp4              # annotated video with tracked bboxes
+├── mot/
+│   └── <clip_name>.txt          # MOTChallenge-format tracker output
+└── timing/
+    ├── <clip_name>.csv          # per-frame timing (det_ms, nms_ms, track_ms, total_ms, n_dets, ...)
+    ├── summary.csv              # per-video timing summary (mean, p50, p95, FPS)
+    └── summary.json
+```
+
+Per-frame CSV columns:
+
+| Column | Description |
+|--------|-------------|
+| `det_ms` | YOLO inference (GPU) |
+| `nms_ms` | Cross-modal NMS (CPU) |
+| `track_ms` | HybridSORT update including ReID embedding extraction (GPU+CPU) |
+| `total_ms` | Full pipeline including drawing and video write |
+| `n_dets` / `n_dets_after_nms` | Detection count before/after NMS |
+| `n_tracks` / `n_coasting` | Active matched tracks and Kalman-coasting tracks |
+
+### Evaluating Tracking Results
+
+```bash
+# Evaluate using experiment config (reads gt path and tracker mot dir from config)
+python eval/eval_tracking.py \
+    --config configs/tracking_eval.yaml \
+    --no-trackeval --plot
+
+# Or specify paths directly
+python eval/eval_tracking.py \
+    --gt data/eval/gt/mot \
+    --tracker results/timing_benchmark/mot \
+    --no-trackeval --plot \
+    -o results/eval
+```
+
+### Visualising Ground Truth
+
+Render GT bounding boxes with track IDs onto source videos for annotation validation:
+
+```bash
+# All sequences
+python visualize_gt.py
+
+# Single sequence
+python visualize_gt.py --seq "FishingBoat"
+```
+
+Output goes to `results/gt_visualized/`.
+
 ## Dependencies
 
-| Environment | Packages |
+Two requirement files are provided for `uv`:
+
+```bash
+# Tracker environment (tracking + eval)
+uv venv --python 3.10
+uv pip install -r requirements-tracker.txt \
+    --extra-index-url https://download.pytorch.org/whl/cu126 \
+    --index-strategy unsafe-best-match
+
+# Detection eval environment
+uv pip install -r requirements-detection-eval.txt
+```
+
+| Environment | Key packages |
 |-------------|----------|
-| `boat-tracker` | torch 2.7.1+cu126, ultralytics 8.4.3, boxmot 15.0.9 |
-| `obj-det` | pycocotools, pandas, numpy, opencv-python |
+| Tracker | torch 2.7.1+cu126, ultralytics 8.4.3, boxmot 15.0.10, trackeval |
+| Detection eval | pycocotools, pandas, numpy, opencv-python |
