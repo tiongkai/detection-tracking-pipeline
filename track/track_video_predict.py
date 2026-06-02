@@ -166,7 +166,7 @@ def process_clip(
     model, tracker, class_names, clip_path, out_path,
     conf=0.3, iou=0.5, ema_alpha=0.5, det_interval=1, max_coast=30, coast_cls_ids=None,
     class_groups=None, nms_iou_thresh=0.5, mot_path=None, track_cls_ids=None,
-    timing_path=None, no_video=False,
+    timing_path=None, timings_only=False,
 ):
     cap = cv2.VideoCapture(clip_path)
     if not cap.isOpened():
@@ -178,7 +178,7 @@ def process_clip(
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     writer = None
-    if not no_video:
+    if not timings_only:
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         writer = cv2.VideoWriter(str(out_path), fourcc, fps, (w, h))
     smoother = BoxSmoother(alpha=ema_alpha)
@@ -252,7 +252,7 @@ def process_clip(
                     f"{ct['conf']:.4f},{ct['cls']},{vis:.2f}"
                 )
 
-        if not no_video:
+        if not timings_only:
             draw_tracks(frame, tracks, coasting, class_names, smoother)
             writer.write(frame)
 
@@ -278,19 +278,19 @@ def process_clip(
             print(f"  {frame_idx}/{total} frames [{det_flag}] (det: {n_matched}, predicted: {n_coast}) | {avg_fps:.1f} FPS", flush=True)
 
     cap.release()
-    if writer:
+    if writer is not None:
         writer.release()
 
-    if mot_path and mot_lines:
+    if mot_path and mot_lines and not timings_only:
         Path(mot_path).parent.mkdir(parents=True, exist_ok=True)
         Path(mot_path).write_text("\n".join(mot_lines) + "\n")
 
     if timing_path and frame_timings:
         Path(timing_path).parent.mkdir(parents=True, exist_ok=True)
         with open(timing_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=frame_timings[0].keys())
-            writer.writeheader()
-            writer.writerows(frame_timings)
+            csv_writer = csv.DictWriter(f, fieldnames=frame_timings[0].keys())
+            csv_writer.writeheader()
+            csv_writer.writerows(frame_timings)
 
     return frame_timings
 
@@ -349,15 +349,15 @@ def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="
         enable_nms=False, save_mot=False, track_classes=None,
         tracker_iou=0.15, max_age=180, alpha=0.7, longterm_bank_length=150,
         longterm_reid_weight=0.25, longterm_reid_correction_thresh=0.5,
-        longterm_reid_correction_thresh_low=0.5,
-        no_video=False, reid_weights="clip_veri.pt"):
+        longterm_reid_correction_thresh_low=0.5, timings_only=False):
     model = YOLO(weights)
     class_names = model.names
 
     clips = sorted(glob.glob(os.path.join(source_dir, "*")))
     clips = [c for c in clips if Path(c).suffix.lower() in {".mp4", ".mkv", ".avi", ".mov", ".ts"}]
     out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if not timings_only:
+        out_dir.mkdir(parents=True, exist_ok=True)
 
     timing_dir = out_dir / "timing"
     timing_dir.mkdir(parents=True, exist_ok=True)
@@ -378,13 +378,12 @@ def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="
         print(f"Cross-modal NMS enabled (iou_thresh={nms_iou_thresh}): {class_groups}")
 
     mot_dir = None
-    if save_mot:
+    if save_mot and not timings_only:
         mot_dir = out_dir / "mot"
         mot_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Processing {len(clips)} clips -> {out_dir}")
     print(f"Classes: {class_names}")
-    print(f"ReID: {reid_weights} | Video output: {'OFF' if no_video else 'ON'}")
     print(f"Tracker: HybridSORT | tracker_iou={tracker_iou} alpha={alpha} max_age={max_age} "
           f"longterm_bank={longterm_bank_length} longterm_w={longterm_reid_weight} "
           f"correction_thresh={longterm_reid_correction_thresh}")
@@ -396,17 +395,13 @@ def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="
 
     for i, clip in enumerate(clips):
         name = Path(clip).stem
-        timing_path = str(timing_dir / f"{name}.csv")
-
-        skip_file = out_dir / f"{name}.mp4" if not no_video else Path(timing_path)
-        if skip_file.exists():
+        out_mp4 = out_dir / f"{name}.mp4"
+        if not timings_only and out_mp4.exists():
             print(f"[{i+1}/{len(clips)}] SKIP: {name}")
             continue
 
-        out_mp4 = out_dir / f"{name}.mp4"
-
         tracker = HybridSort(
-            reid_weights=Path(reid_weights),
+            reid_weights=Path("clip_veri.pt"),
             device=device,
             half=False,
             per_class=True,
@@ -426,6 +421,7 @@ def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="
         )
 
         mot_path = str(mot_dir / f"{name}.txt") if mot_dir else None
+        timing_path = str(timing_dir / f"{name}.csv")
 
         print(f"[{i+1}/{len(clips)}] {name} (det every {det_interval} frame(s))", flush=True)
         frame_timings = process_clip(
@@ -434,9 +430,9 @@ def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="
             max_coast=max_coast, coast_cls_ids=coast_cls_ids,
             class_groups=class_groups, nms_iou_thresh=nms_iou_thresh,
             mot_path=mot_path, track_cls_ids=track_cls_ids,
-            timing_path=timing_path, no_video=no_video,
+            timing_path=timing_path, timings_only=timings_only,
         )
-        if not no_video:
+        if not timings_only:
             size_mb = out_mp4.stat().st_size / 1e6
             print(f"  -> {out_mp4.name} ({size_mb:.1f} MB)")
 
@@ -445,25 +441,28 @@ def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="
             all_summaries.append(summary)
 
     if all_summaries:
-        summary_path = timing_dir / "summary.json"
-        with open(summary_path, "w") as f:
-            json.dump(all_summaries, f, indent=2)
+        if not timings_only:
+            summary_path = timing_dir / "summary.json"
+            with open(summary_path, "w") as f:
+                json.dump(all_summaries, f, indent=2)
 
-        summary_csv = timing_dir / "summary.csv"
-        with open(summary_csv, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=all_summaries[0].keys())
-            writer.writeheader()
-            writer.writerows(all_summaries)
+            summary_csv = timing_dir / "summary.csv"
+            with open(summary_csv, "w", newline="") as f:
+                csv_writer = csv.DictWriter(f, fieldnames=all_summaries[0].keys())
+                csv_writer.writeheader()
+                csv_writer.writerows(all_summaries)
 
         overall_fps = 1000.0 / np.mean([s["total_mean_ms"] for s in all_summaries])
         overall_det = np.mean([s["det_mean_ms"] for s in all_summaries])
         overall_track = np.mean([s["track_mean_ms"] for s in all_summaries])
         print(f"\n{'='*60}")
         print(f"Overall: {overall_fps:.1f} FPS | det {overall_det:.1f}ms | track {overall_track:.1f}ms")
-        print(f"Timing logs: {timing_dir}")
+        if not timings_only:
+            print(f"Timing logs: {timing_dir}")
         print(f"{'='*60}")
 
-    print(f"Done. {len(list(out_dir.glob('*.mp4')))} mp4 files in {out_dir}")
+    if not timings_only:
+        print(f"Done. {len(list(out_dir.glob('*.mp4')))} mp4 files in {out_dir}")
 
 
 if __name__ == "__main__":
@@ -492,10 +491,8 @@ if __name__ == "__main__":
                         help="IoU threshold for cross-modal NMS")
     parser.add_argument("--save-mot", action="store_true",
                         help="Save MOTChallenge-format tracking output to <out>/mot/")
-    parser.add_argument("--no-video", action="store_true",
-                        help="Skip video rendering — timing and MOT output only")
-    parser.add_argument("--reid-weights", default=None,
-                        help="Path to ReID model weights (default: clip_veri.pt)")
+    parser.add_argument("--timings-only", action="store_true",
+                        help="Run inference without saving any output files; print timing summaries to terminal only")
     parser.add_argument("--device", default=None, help="Torch device")
     args = parser.parse_args()
 
@@ -503,7 +500,7 @@ if __name__ == "__main__":
     p = dict(
         conf=0.3, iou=0.5, ema_alpha=1.0, det_interval=1, max_coast=10,
         track_classes=None, coast_classes=None, enable_nms=False, nms_iou_thresh=0.5,
-        save_mot=False, device="cuda:0",
+        save_mot=False, timings_only=False, device="cuda:0",
         tracker_iou=0.15, max_age=180, alpha=0.7, longterm_bank_length=150,
         longterm_reid_weight=0.25, longterm_reid_correction_thresh=0.5,
         longterm_reid_correction_thresh_low=0.5,
@@ -553,8 +550,7 @@ if __name__ == "__main__":
     if args.enable_nms: p["enable_nms"] = True
     if args.nms_iou_thresh is not None: p["nms_iou_thresh"] = args.nms_iou_thresh
     if args.save_mot: p["save_mot"] = True
-    if args.no_video: p["no_video"] = True
-    if args.reid_weights is not None: p["reid_weights"] = args.reid_weights
+    if args.timings_only: p["timings_only"] = True
     if args.device is not None: p["device"] = args.device
 
     # Resolve output directory: CLI > config parent dir > error
@@ -562,8 +558,9 @@ if __name__ == "__main__":
     if out is None:
         if args.config:
             out = str(Path(args.config).parent)
-            p["save_mot"] = True   # always write MOT output when driven by config
-            print(f"Output dir: {out} (from config parent)")
+            if not p.get("timings_only"):
+                p["save_mot"] = True   # always write MOT output when driven by config
+                print(f"Output dir: {out} (from config parent)")
         else:
             parser.error("--out is required when --config is not specified")
 
