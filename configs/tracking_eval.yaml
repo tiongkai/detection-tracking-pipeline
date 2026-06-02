@@ -1,0 +1,33 @@
+experiment: 5
+name: nms_enabled
+date: 2026-05-26
+description: Interclass NMS enabled to suppress duplicate RGB/thermal detections
+
+tracker:
+  iou_threshold: 0.15
+  alpha: 0.7
+  longterm_reid_correction_thresh: 0.5
+  longterm_reid_correction_thresh_low: 0.5
+  EG_weight_high_score: 4.6
+  det_thresh: 0.3
+  max_age: 180
+  min_hits: 3
+  longterm_bank_length: 150
+  longterm_reid_weight: 0.25
+
+detection:
+  track_classes: boat
+  conf: 0.3
+  iou: 0.5
+  enable_nms: true           # ← NMS ENABLED
+  nms_iou_thresh: 0.5        # ← NMS IoU threshold
+
+kalman:
+  max_coast: 10
+  coast_classes: boat
+
+eval:
+  iou_threshold: 0.5
+
+gt: data/eval/gt/mot
+

@@ -12,9 +12,12 @@ Usage:
         --conf 0.3 --iou 0.5 --ema-alpha 1.0
 """
 import argparse
+import csv
 import glob
 import hashlib
+import json
 import os
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -162,12 +165,13 @@ def draw_tracks(frame, tracks, coasting, class_names, smoother):
 def process_clip(
     model, tracker, class_names, clip_path, out_path,
     conf=0.3, iou=0.5, ema_alpha=0.5, det_interval=1, max_coast=30, coast_cls_ids=None,
-    class_groups=None, nms_iou_thresh=0.5, mot_path=None,
+    class_groups=None, nms_iou_thresh=0.5, mot_path=None, track_cls_ids=None,
+    timing_path=None,
 ):
     cap = cv2.VideoCapture(clip_path)
     if not cap.isOpened():
         print(f"  ERROR: cannot open {clip_path}")
-        return
+        return None
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -177,6 +181,7 @@ def process_clip(
     writer = cv2.VideoWriter(str(out_path), fourcc, fps, (w, h))
     smoother = BoxSmoother(alpha=ema_alpha)
     mot_lines = [] if mot_path else None
+    frame_timings = []
 
     frame_idx = 0
     while True:
@@ -185,11 +190,20 @@ def process_clip(
             break
         frame_idx += 1
 
+        t_frame_start = time.perf_counter()
         run_det = (frame_idx % det_interval == 1) or (det_interval == 1)
 
         dets = np.empty((0, 6), dtype=np.float32)
+        t_det = 0.0
+        t_nms = 0.0
+        n_dets_before_nms = 0
+        n_dets_after_nms = 0
+
         if run_det:
+            t0 = time.perf_counter()
             results = model.predict(frame, conf=conf, iou=iou, verbose=False)
+            t_det = time.perf_counter() - t0
+
             r = results[0]
             if r.boxes is not None and len(r.boxes) > 0:
                 xyxy = r.boxes.xyxy.cpu().numpy()
@@ -197,10 +211,20 @@ def process_clip(
                 clss = r.boxes.cls.cpu().numpy().reshape(-1, 1)
                 dets = np.hstack([xyxy, confs, clss]).astype(np.float32)
 
-        if class_groups and len(dets) > 0:
-            dets = cross_modal_nms(dets, class_groups, nms_iou_thresh)
+        if track_cls_ids is not None and len(dets) > 0:
+            mask = np.isin(dets[:, 5].astype(int), list(track_cls_ids))
+            dets = dets[mask]
 
+        n_dets_before_nms = len(dets)
+        if class_groups and len(dets) > 0:
+            t0 = time.perf_counter()
+            dets = cross_modal_nms(dets, class_groups, nms_iou_thresh)
+            t_nms = time.perf_counter() - t0
+        n_dets_after_nms = len(dets)
+
+        t0 = time.perf_counter()
         tracks = tracker.update(dets, frame)
+        t_track = time.perf_counter() - t0
 
         matched_ids = set()
         if len(tracks) > 0:
@@ -230,11 +254,26 @@ def process_clip(
 
         writer.write(frame)
 
+        t_total = time.perf_counter() - t_frame_start
+        frame_timings.append({
+            "frame": frame_idx,
+            "det_ms": t_det * 1000,
+            "nms_ms": t_nms * 1000,
+            "track_ms": t_track * 1000,
+            "total_ms": t_total * 1000,
+            "n_dets": n_dets_before_nms,
+            "n_dets_after_nms": n_dets_after_nms,
+            "n_tracks": len(tracks) if len(tracks) > 0 else 0,
+            "n_coasting": len(coasting),
+            "ran_det": run_det,
+        })
+
         if frame_idx % 100 == 0 or frame_idx == total:
             n_matched = len(tracks) if len(tracks) > 0 else 0
             n_coast = len(coasting)
             det_flag = "DET" if run_det else "KF"
-            print(f"  {frame_idx}/{total} frames [{det_flag}] (det: {n_matched}, predicted: {n_coast})", flush=True)
+            avg_fps = 1000.0 / (sum(t["total_ms"] for t in frame_timings) / len(frame_timings))
+            print(f"  {frame_idx}/{total} frames [{det_flag}] (det: {n_matched}, predicted: {n_coast}) | {avg_fps:.1f} FPS", flush=True)
 
     cap.release()
     writer.release()
@@ -242,6 +281,15 @@ def process_clip(
     if mot_path and mot_lines:
         Path(mot_path).parent.mkdir(parents=True, exist_ok=True)
         Path(mot_path).write_text("\n".join(mot_lines) + "\n")
+
+    if timing_path and frame_timings:
+        Path(timing_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(timing_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=frame_timings[0].keys())
+            writer.writeheader()
+            writer.writerows(frame_timings)
+
+    return frame_timings
 
 
 def build_class_groups(class_names):
@@ -254,7 +302,51 @@ def build_class_groups(class_names):
     return {base: ids for base, ids in name_to_ids.items() if len(ids) > 1}
 
 
-def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="cuda:0", det_interval=1, max_coast=30, coast_classes=None, nms_iou_thresh=0.5, enable_nms=False, save_mot=False):
+def summarize_timings(timings, clip_name):
+    if not timings:
+        return {}
+    det_frames = [t for t in timings[1:] if t["ran_det"]]
+    all_frames = timings[1:]
+    if not all_frames:
+        return {}
+
+    det_ms = [t["det_ms"] for t in det_frames] if det_frames else [0]
+    track_ms = [t["track_ms"] for t in all_frames]
+    nms_ms = [t["nms_ms"] for t in det_frames if t["nms_ms"] > 0] or [0]
+    total_ms = [t["total_ms"] for t in all_frames]
+
+    summary = {
+        "clip": clip_name,
+        "n_frames": len(timings),
+        "det_mean_ms": np.mean(det_ms),
+        "det_p50_ms": np.median(det_ms),
+        "det_p95_ms": np.percentile(det_ms, 95),
+        "track_mean_ms": np.mean(track_ms),
+        "track_p50_ms": np.median(track_ms),
+        "track_p95_ms": np.percentile(track_ms, 95),
+        "nms_mean_ms": np.mean(nms_ms),
+        "total_mean_ms": np.mean(total_ms),
+        "total_p50_ms": np.median(total_ms),
+        "total_p95_ms": np.percentile(total_ms, 95),
+        "fps_mean": 1000.0 / np.mean(total_ms),
+        "fps_p5": 1000.0 / np.percentile(total_ms, 95),
+    }
+
+    print(f"  Timing: det {summary['det_mean_ms']:.1f}ms | "
+          f"track {summary['track_mean_ms']:.1f}ms | "
+          f"nms {summary['nms_mean_ms']:.1f}ms | "
+          f"total {summary['total_mean_ms']:.1f}ms | "
+          f"{summary['fps_mean']:.1f} FPS (p5={summary['fps_p5']:.1f})")
+
+    return summary
+
+
+def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="cuda:0",
+        det_interval=1, max_coast=30, coast_classes=None, nms_iou_thresh=0.5,
+        enable_nms=False, save_mot=False, track_classes=None,
+        tracker_iou=0.15, max_age=180, alpha=0.7, longterm_bank_length=150,
+        longterm_reid_weight=0.25, longterm_reid_correction_thresh=0.5,
+        longterm_reid_correction_thresh_low=0.5):
     model = YOLO(weights)
     class_names = model.names
 
@@ -262,6 +354,14 @@ def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="
     clips = [c for c in clips if Path(c).suffix.lower() in {".mp4", ".mkv", ".avi", ".mov", ".ts"}]
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    timing_dir = out_dir / "timing"
+    timing_dir.mkdir(parents=True, exist_ok=True)
+
+    track_cls_ids = None
+    if track_classes:
+        track_cls_ids = {k for k, v in class_names.items() if any(c in v.lower() for c in track_classes)}
+        print(f"Tracking limited to: {[class_names[i] for i in sorted(track_cls_ids)]}")
 
     coast_cls_ids = None
     if coast_classes:
@@ -280,9 +380,14 @@ def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="
 
     print(f"Processing {len(clips)} clips -> {out_dir}")
     print(f"Classes: {class_names}")
-    print(f"Tracker: HybridSORT (with Kalman prediction) | EMA alpha: {ema_alpha} | conf: {conf} | det_interval: {det_interval} | max_coast: {max_coast} | device: {device}")
+    print(f"Tracker: HybridSORT | tracker_iou={tracker_iou} alpha={alpha} max_age={max_age} "
+          f"longterm_bank={longterm_bank_length} longterm_w={longterm_reid_weight} "
+          f"correction_thresh={longterm_reid_correction_thresh}")
+    print(f"Detection: conf={conf} iou={iou} | EMA alpha={ema_alpha} | det_interval={det_interval} | max_coast={max_coast}")
     if mot_dir:
         print(f"MOT output: {mot_dir}")
+
+    all_summaries = []
 
     for i, clip in enumerate(clips):
         name = Path(clip).stem
@@ -298,25 +403,56 @@ def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="
             per_class=True,
             nr_classes=len(class_names),
             det_thresh=conf,
-            max_age=180,
+            max_age=max_age,
             min_hits=1 if det_interval > 1 else 3,
-            iou_threshold=0.15,
+            iou_threshold=tracker_iou,
             use_custom_kf=True,
-            alpha=0.7,
-            longterm_bank_length=150,
-            longterm_reid_weight=0.25,
+            alpha=alpha,
+            longterm_bank_length=longterm_bank_length,
+            longterm_reid_weight=longterm_reid_weight,
             with_longterm_reid=True,
             with_longterm_reid_correction=True,
-            longterm_reid_correction_thresh=0.5,
-            longterm_reid_correction_thresh_low=0.5,
+            longterm_reid_correction_thresh=longterm_reid_correction_thresh,
+            longterm_reid_correction_thresh_low=longterm_reid_correction_thresh_low,
         )
 
         mot_path = str(mot_dir / f"{name}.txt") if mot_dir else None
+        timing_path = str(timing_dir / f"{name}.csv")
 
         print(f"[{i+1}/{len(clips)}] {name} (det every {det_interval} frame(s))", flush=True)
-        process_clip(model, tracker, class_names, clip, out_mp4, conf=conf, iou=iou, ema_alpha=ema_alpha, det_interval=det_interval, max_coast=max_coast, coast_cls_ids=coast_cls_ids, class_groups=class_groups, nms_iou_thresh=nms_iou_thresh, mot_path=mot_path)
+        frame_timings = process_clip(
+            model, tracker, class_names, clip, out_mp4,
+            conf=conf, iou=iou, ema_alpha=ema_alpha, det_interval=det_interval,
+            max_coast=max_coast, coast_cls_ids=coast_cls_ids,
+            class_groups=class_groups, nms_iou_thresh=nms_iou_thresh,
+            mot_path=mot_path, track_cls_ids=track_cls_ids,
+            timing_path=timing_path,
+        )
         size_mb = out_mp4.stat().st_size / 1e6
         print(f"  -> {out_mp4.name} ({size_mb:.1f} MB)")
+
+        summary = summarize_timings(frame_timings, name)
+        if summary:
+            all_summaries.append(summary)
+
+    if all_summaries:
+        summary_path = timing_dir / "summary.json"
+        with open(summary_path, "w") as f:
+            json.dump(all_summaries, f, indent=2)
+
+        summary_csv = timing_dir / "summary.csv"
+        with open(summary_csv, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=all_summaries[0].keys())
+            writer.writeheader()
+            writer.writerows(all_summaries)
+
+        overall_fps = 1000.0 / np.mean([s["total_mean_ms"] for s in all_summaries])
+        overall_det = np.mean([s["det_mean_ms"] for s in all_summaries])
+        overall_track = np.mean([s["track_mean_ms"] for s in all_summaries])
+        print(f"\n{'='*60}")
+        print(f"Overall: {overall_fps:.1f} FPS | det {overall_det:.1f}ms | track {overall_track:.1f}ms")
+        print(f"Timing logs: {timing_dir}")
+        print(f"{'='*60}")
 
     print(f"Done. {len(list(out_dir.glob('*.mp4')))} mp4 files in {out_dir}")
 
@@ -325,28 +461,95 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="YOLO + HybridSORT tracking with Kalman prediction for coasting tracks"
     )
+    parser.add_argument("--config", default=None, help="Path to experiment config YAML (sets all defaults)")
     parser.add_argument("--weights", required=True, help="Path to YOLO .pt weights")
     parser.add_argument("--source", required=True, help="Directory of video clips")
-    parser.add_argument("--out", required=True, help="Output directory for annotated videos")
-    parser.add_argument("--conf", type=float, default=0.3, help="Detection confidence threshold")
-    parser.add_argument("--iou", type=float, default=0.5, help="NMS IoU threshold")
-    parser.add_argument("--ema-alpha", type=float, default=1.0,
+    parser.add_argument("--out", default=None, help="Output directory (defaults to config's parent directory)")
+    parser.add_argument("--conf", type=float, default=None, help="Detection confidence threshold")
+    parser.add_argument("--iou", type=float, default=None, help="NMS IoU threshold")
+    parser.add_argument("--ema-alpha", type=float, default=None,
                         help="EMA smoothing factor (0=full history, 1=no smoothing)")
-    parser.add_argument("--det-interval", type=int, default=1,
+    parser.add_argument("--det-interval", type=int, default=None,
                         help="Run detection every N frames (1=every frame, 2=every other frame)")
-    parser.add_argument("--max-coast", type=int, default=10,
-                        help="Max frames to show Kalman-predicted boxes before hiding (default 10 = ~0.3s at 30fps)")
+    parser.add_argument("--max-coast", type=int, default=None,
+                        help="Max frames to show Kalman-predicted boxes before hiding")
+    parser.add_argument("--track-classes", nargs="*", default=None,
+                        help="Only track these classes (substring match, e.g. 'boat'). Default: all classes")
     parser.add_argument("--coast-classes", nargs="*", default=None,
                         help="Only predict for these classes (substring match, e.g. 'boat'). Default: all classes")
     parser.add_argument("--enable-nms", action="store_true",
                         help="Enable cross-modal NMS (suppress duplicate detections across RGB/thermal class pairs)")
-    parser.add_argument("--nms-iou-thresh", type=float, default=0.5,
-                        help="IoU threshold for cross-modal NMS (default 0.5)")
+    parser.add_argument("--nms-iou-thresh", type=float, default=None,
+                        help="IoU threshold for cross-modal NMS")
     parser.add_argument("--save-mot", action="store_true",
                         help="Save MOTChallenge-format tracking output to <out>/mot/")
-    parser.add_argument("--device", default="cuda:0", help="Torch device")
+    parser.add_argument("--device", default=None, help="Torch device")
     args = parser.parse_args()
-    run(args.weights, args.source, args.out,
-        conf=args.conf, iou=args.iou, ema_alpha=args.ema_alpha, device=args.device,
-        det_interval=args.det_interval, max_coast=args.max_coast, coast_classes=args.coast_classes,
-        nms_iou_thresh=args.nms_iou_thresh, enable_nms=args.enable_nms, save_mot=args.save_mot)
+
+    # Base defaults
+    p = dict(
+        conf=0.3, iou=0.5, ema_alpha=1.0, det_interval=1, max_coast=10,
+        track_classes=None, coast_classes=None, enable_nms=False, nms_iou_thresh=0.5,
+        save_mot=False, device="cuda:0",
+        tracker_iou=0.15, max_age=180, alpha=0.7, longterm_bank_length=150,
+        longterm_reid_weight=0.25, longterm_reid_correction_thresh=0.5,
+        longterm_reid_correction_thresh_low=0.5,
+    )
+
+    # Apply config file values
+    if args.config:
+        import yaml
+        with open(args.config) as f:
+            cfg = yaml.safe_load(f)
+        print(f"Config: {args.config}")
+        det = cfg.get("detection", {})
+        trk = cfg.get("tracker", {})
+        kal = cfg.get("kalman", {})
+        mapping = {
+            "conf": det.get("conf"),
+            "iou": det.get("iou"),
+            "enable_nms": det.get("enable_nms"),
+            "nms_iou_thresh": det.get("nms_iou_thresh"),
+            "tracker_iou": trk.get("iou_threshold"),
+            "max_age": trk.get("max_age"),
+            "alpha": trk.get("alpha"),
+            "longterm_bank_length": trk.get("longterm_bank_length"),
+            "longterm_reid_weight": trk.get("longterm_reid_weight"),
+            "longterm_reid_correction_thresh": trk.get("longterm_reid_correction_thresh"),
+            "longterm_reid_correction_thresh_low": trk.get("longterm_reid_correction_thresh_low"),
+            "max_coast": kal.get("max_coast"),
+            "track_classes": (
+                [det["track_classes"]] if isinstance(det.get("track_classes"), str)
+                else det.get("track_classes")
+            ),
+            "coast_classes": (
+                [kal["coast_classes"]] if isinstance(kal.get("coast_classes"), str)
+                else kal.get("coast_classes")
+            ),
+        }
+        p.update({k: v for k, v in mapping.items() if v is not None})
+
+    # CLI flags override config (only when explicitly provided)
+    if args.conf is not None: p["conf"] = args.conf
+    if args.iou is not None: p["iou"] = args.iou
+    if args.ema_alpha is not None: p["ema_alpha"] = args.ema_alpha
+    if args.det_interval is not None: p["det_interval"] = args.det_interval
+    if args.max_coast is not None: p["max_coast"] = args.max_coast
+    if args.track_classes is not None: p["track_classes"] = args.track_classes
+    if args.coast_classes is not None: p["coast_classes"] = args.coast_classes
+    if args.enable_nms: p["enable_nms"] = True
+    if args.nms_iou_thresh is not None: p["nms_iou_thresh"] = args.nms_iou_thresh
+    if args.save_mot: p["save_mot"] = True
+    if args.device is not None: p["device"] = args.device
+
+    # Resolve output directory: CLI > config parent dir > error
+    out = args.out
+    if out is None:
+        if args.config:
+            out = str(Path(args.config).parent)
+            p["save_mot"] = True   # always write MOT output when driven by config
+            print(f"Output dir: {out} (from config parent)")
+        else:
+            parser.error("--out is required when --config is not specified")
+
+    run(args.weights, args.source, out, **p)
