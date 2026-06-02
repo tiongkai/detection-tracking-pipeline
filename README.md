@@ -260,19 +260,35 @@ The JSON output schema is documented in `eval/sample_tracking_metrics.json`.
 Use a YAML config to drive tracking with specific parameters. The config sets tracker hyperparameters, detection settings, and NMS options.
 
 ```bash
-# Run tracking with exp09 (NMS enabled) config — outputs video + MOT + timing
+# Full run: video + MOT + timing
 python track/track_video_predict.py \
     --config configs/tracking_eval.yaml \
     --weights weights/best.pt \
     --source data/eval/vws-eval-set \
     --save-mot
+
+# Timing-only (no video rendering — for benchmarking)
+python track/track_video_predict.py \
+    --config configs/tracking_eval.yaml \
+    --weights weights/best.pt \
+    --source data/eval/vws-eval-set \
+    --out results/benchmark_clip_novideo \
+    --no-video --save-mot
+
+# Swap ReID model (e.g. OSNet instead of CLIP)
+python track/track_video_predict.py \
+    --config configs/tracking_eval.yaml \
+    --weights weights/best.pt \
+    --source data/eval/vws-eval-set \
+    --out results/benchmark_osnet \
+    --reid-weights osnet_x0_25_msmt17.pt --no-video --save-mot
 ```
 
 Output structure:
 
 ```
-<config_parent_dir>/
-├── <clip_name>.mp4              # annotated video with tracked bboxes
+<out_dir>/
+├── <clip_name>.mp4              # annotated video (omitted with --no-video)
 ├── mot/
 │   └── <clip_name>.txt          # MOTChallenge-format tracker output
 └── timing/
@@ -291,6 +307,20 @@ Per-frame CSV columns:
 | `total_ms` | Full pipeline including drawing and video write |
 | `n_dets` / `n_dets_after_nms` | Detection count before/after NMS |
 | `n_tracks` / `n_coasting` | Active matched tracks and Kalman-coasting tracks |
+
+### Inference Speed Baseline (RTX A5500, CLIP ReID, 82 clips)
+
+```
+Overall: 21.0 FPS | det 16.9ms | track 19.9ms
+
+Time budget per frame (49.8ms):
+  Detection (YOLO):     17.1ms  (34%)
+  Tracking + ReID:      21.4ms  (43%)  ← bottleneck
+  Drawing + video IO:   11.2ms  (22%)
+  NMS:                   0.04ms  (0%)
+```
+
+Tracking+ReID scales with detection count: 1.8ms at 0 dets, +6-8ms per detection (CLIP crop + forward pass).
 
 ### Evaluating Tracking Results
 
