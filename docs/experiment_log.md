@@ -47,6 +47,12 @@ Target: 20 FPS on live stream. Per-frame budget = 50 ms.
 | S4 | ECC off + bank=1 | osnet_x0_25 | off | off | 17.9 | 16.4 | 28.8 |
 | S5 | ECC off + no ReID | — | off | off | 18.7 | 2.9 | 45.3 |
 | S6 | ECC off + **TRT ReID** | osnet_x0_25 **.engine** (FP16) | off | off | 18.1 | **5.7** | **41.5** |
+| S7 | ECC off + **TRT detector + TRT ReID** | osnet .engine | off | off | **10.5** | 10.7† | **45.5** |
+
+† With both models on TRT, per-phase attribution blurs: TRT detection runs more
+asynchronously than PyTorch (fewer forced GPU syncs), so some detection GPU work
+overlaps into the track timing window. Trust the **total wall-clock** (21.2 ms),
+not the det/track split. Detector engine built via `YOLO.export(format='engine', half=True)`.
 
 S2–S5 are matched (same torch 2.7.1+cu126, no video) run in parallel on the two
 GPUs to isolate each cost cleanly.
@@ -105,15 +111,16 @@ Baseline per-frame budget (S0, 50 clips / 23k frames):
 
 1. ~~**ECC**: disable for static cameras~~ — DONE (`--no-cmc`), +3.3 FPS, 0 accuracy loss.
 2. ~~**TensorRT ReID**~~ — DONE, track 19→5.7 ms, +16 FPS. Use `.engine` via `--reid-weights`.
-3. **TensorRT detection** — NOW THE BOTTLENECK (~18 ms). `model.export(format='engine')`,
-   then `--weights best.engine`. Expect det 18 → ~8-10 ms → ~60+ FPS.
-4. **Skip video IO** in production (no draw/encode) — H5, ~11 ms/frame.
+3. ~~**TensorRT detection**~~ — DONE, det 18→10.5 ms. Use `.engine` via `--weights`.
+4. **Skip video IO** in production (no draw/encode) — H5, ~11 ms/frame (already off in benchmarks).
 5. **Long-term bank**: cache the mean incrementally (`hybridsort.py:588`) — ~2.6 ms.
 6. **ReID preprocessing**: batch crops / GPU-side resize — secondary after TRT.
 
-### Result so far
-Baseline 21 FPS (CLIP, video on) → **41.5 FPS** (ECC off + TRT ReID, no video).
-Headroom remains: detection is now the dominant cost.
+### Result
+**Baseline 21.0 FPS (CLIP, video on, ECC on) → 45.5 FPS (full TRT, ECC off, no video).**
+2.2× speedup, well past the 20 FPS target. Detection and tracking now balanced (~10 ms each).
+Accuracy preserved: ECC removal showed IoU 0.991 / 0 px median box shift; ReID model unchanged
+(OSNet, just compiled to TRT). Deployment: ship ONNX, build engines per-machine (see export/).
 
 ---
 
