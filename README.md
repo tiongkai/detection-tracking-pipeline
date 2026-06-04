@@ -322,6 +322,66 @@ Time budget per frame (49.8ms):
 
 Tracking+ReID scales with detection count: 1.8ms at 0 dets, +6-8ms per detection (CLIP crop + forward pass).
 
+### TensorRT Acceleration (detector + ReID)
+
+The detector and ReID models run on PyTorch eager mode by default, which is dominated by
+per-op kernel-launch overhead. Compiling them to TensorRT engines gives a large speedup
+(full pipeline **21 → 45 FPS** on an RTX A5500; see `docs/experiment_log.md`).
+
+**Engines are hardware-specific** — tied to the GPU architecture, TensorRT version, and CUDA
+version of the machine that built them. So ship the portable **ONNX** files and build the
+`.engine` on each deployment machine.
+
+**Step 1 — PyTorch → ONNX (portable; do once, ship these):**
+
+```bash
+# ReID model (OSNet) → ONNX
+python export/export_onnx.py \
+    --reid-weights osnet_x0_25_msmt17.pt \
+    --out export/onnx
+
+# YOLO detector → engine directly via ultralytics (handles ONNX internally)
+yolo export model=weights/best.pt format=engine half=True device=0 imgsz=640
+# (or: python -c "from ultralytics import YOLO; YOLO('weights/best.pt').export(format='engine', half=True, device=0)")
+```
+
+**Step 2 — ONNX → TensorRT engine (run on each deployment machine):**
+
+```bash
+# Build an FP16 engine from the ReID ONNX
+python export/build_tensorrt.py \
+    --onnx export/onnx/osnet_x0_25_msmt17.onnx \
+    --out export/engines --fp16
+
+# Or build every ONNX in a directory at once
+python export/build_tensorrt.py --onnx-dir export/onnx --out export/engines --fp16
+```
+
+`build_tensorrt.py` works on any ONNX. The YOLO detector is exported straight to `.engine` by
+ultralytics in Step 1 (it has no separate ONNX step needed), so it lands in `weights/best.engine`.
+
+**Step 3 — Load the engines for inference:**
+
+Both ultralytics (detector) and boxmot (ReID) auto-detect the `.engine` suffix and use the
+TensorRT backend — just point the same flags at the engine files instead of the `.pt`/`.onnx`:
+
+```bash
+python track/track_video_predict.py \
+    --config configs/tracking_eval.yaml \
+    --weights weights/best.engine \
+    --reid-weights export/engines/osnet_x0_25_msmt17.engine \
+    --source data/eval/vws-eval-set \
+    --no-cmc --save-mot
+```
+
+Notes:
+- `--no-cmc` disables ECC camera-motion compensation (≈6 ms/frame; safe for static/fixed cameras).
+- TensorRT engines bind to the GPU they were built on. To run on a second identical GPU, build a
+  separate engine there, or launch with `CUDA_VISIBLE_DEVICES=N` so the engine sees that GPU as
+  device 0 (passing `--device cuda:1` directly can raise a CUDA illegal-memory-access error).
+- `.onnx` files also load directly (`--reid-weights model.onnx`) via ONNX Runtime if you don't
+  want to build engines.
+
 ### Evaluating Tracking Results
 
 ```bash
