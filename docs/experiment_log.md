@@ -101,7 +101,7 @@ Baseline per-frame budget (S0, 50 clips / 23k frames):
 | H2 | ECC camera-motion compensation (`cv2.findTransformECC`, CPU, every frame) is a major cost | Full set S2 vs S3: track 25.2 ms (ECC on) vs 19.0 ms (ECC off) → ECC = **6.2 ms/frame**, +3.3 FPS. | **CONFIRMED** |
 | H3 | The ~19 ms tracking residual is ReID crop preprocessing + long-term bank | Decomposed (S3/S4/S5): association 2.9 ms, ReID pipeline 13.5 ms, bank 2.6 ms. The 13.5 ms is **PyTorch eager-mode forward overhead**, not preprocessing or FLOPs (CLIP≈OSNet in eager; TRT-OSNet 3× faster). | **RESOLVED** — root cause = eager forward overhead |
 | H4 | Cross-modal NMS is the single biggest tracking-quality lever | exp09 vs exp00: MOTA 0.244 → 0.329, FP −8001, IDsw −908. All other params near-noise. | **CONFIRMED** |
-| H5 | Drawing + video encoding adds ~11 ms/frame; unnecessary for live deployment | S0 budget shows 11.2 ms "other". `--no-video` runs (S2/S3) will confirm by removing it. | **TESTING** |
+| H5 | Drawing + video encoding adds ~11 ms/frame; unnecessary for live deployment | `--no-video` runs (S2–S7) removed the ~11 ms "other" budget vs video-on (S0/S1). Confirmed. | **CONFIRMED** |
 | H6 | TensorRT FP16 cuts GPU time meaningfully | ReID confirmed: track 19.0 → 5.7 ms (S3 → S6), FPS 25.3 → 41.5. Detection TRT not yet run (now the bottleneck at ~18 ms). | **CONFIRMED (ReID)** — detection pending |
 | H7 | Many eval cameras are static/fixed PTZ, so ECC adds cost without accuracy benefit | S2 vs S3 bbox deviation: 99.9 % match, IoU 0.991, median center shift 0 px. ECC barely moves boxes. | **CONFIRMED** |
 
@@ -121,6 +121,47 @@ Baseline per-frame budget (S0, 50 clips / 23k frames):
 2.2× speedup, well past the 20 FPS target. Detection and tracking now balanced (~10 ms each).
 Accuracy preserved: ECC removal showed IoU 0.991 / 0 px median box shift; ReID model unchanged
 (OSNet, just compiled to TRT). Deployment: ship ONNX, build engines per-machine (see export/).
+
+---
+
+## C. Recall Headroom Sweep (conf × max_coast)
+
+Motivation: GT is **partially labelled** (not all real boats annotated), so precision/MOTA
+are deflated (unlabelled boats counted as FP). **Recall over labelled boats is the trustworthy
+metric.** Swept the two recall levers on the optimized config (OSNet, ECC off, boats-only).
+`max_coast` obtained by post-filtering one `max_coast=60` run per conf (it only gates output
+emission); computed with `eval/sweep_recall.py` at IoU 0.5.
+
+**Recall** (rows = conf, cols = max_coast):
+
+| conf \ mc | 10 | 20 | 30 | 60 |
+|-----------|------|------|------|------|
+| 0.3 (cur) | 0.549 | 0.571 | 0.580 | 0.592 |
+| 0.2 | 0.581 | 0.601 | 0.609 | 0.618 |
+| 0.1 | 0.616 | 0.634 | 0.643 | 0.652 |
+| 0.05 | 0.646 | 0.663 | 0.670 | 0.680 |
+
+**Precision** (deflated by partial GT — directional only):
+
+| conf \ mc | 10 | 20 | 30 | 60 |
+|-----------|------|------|------|------|
+| 0.3 | 0.735 | 0.684 | 0.654 | 0.597 |
+| 0.2 | 0.717 | 0.666 | 0.636 | 0.580 |
+| 0.1 | 0.684 | 0.628 | 0.597 | 0.539 |
+| 0.05 | 0.642 | 0.583 | 0.552 | 0.497 |
+
+Findings:
+- Both levers add recall and **stack**: current op-point (conf 0.3 / mc 10) = 0.549 → corner
+  (conf 0.05 / mc 60) = **0.680** (+0.13 abs, +24 % rel).
+- **conf is the stronger lever** (~0.10) vs max_coast (~0.04); neither has plateaued.
+- Recall is **detector-bound** — lowering conf surfaces more real boats. Since precision is
+  meaningless here, this is close to a free recall gain.
+- KF coasting contributes: vs detection-only, KF adds +0.072 recall (recovers ~6.9 k boxes
+  across short detection gaps). `max_coast` is purely an output filter (no re-tracking needed).
+- Balanced suggestion: **conf 0.1 / mc 20 → recall 0.634**; recall-max: conf 0.05 / mc 30–60.
+
+`conf` cannot be post-filtered (it changes `det_thresh` and the BYTE association stage), so each
+conf is a real run; `max_coast` can be post-filtered.
 
 ---
 
