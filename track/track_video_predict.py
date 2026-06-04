@@ -178,8 +178,10 @@ def process_clip(
     model, tracker, class_names, clip_path, out_path,
     conf=0.3, iou=0.5, ema_alpha=0.5, det_interval=1, max_coast=30, coast_cls_ids=None,
     class_groups=None, nms_iou_thresh=0.5, mot_path=None, track_cls_ids=None,
-    timing_path=None, no_video=False,
+    timing_path=None, no_video=False, timings_only=False,
 ):
+    # timings_only is the strictest output mode: no video AND no MOT (pure benchmark).
+    no_video = no_video or timings_only
     cap = cv2.VideoCapture(clip_path)
     if not cap.isOpened():
         print(f"  ERROR: cannot open {clip_path}")
@@ -293,7 +295,7 @@ def process_clip(
     if writer:
         writer.release()
 
-    if mot_path and mot_lines:
+    if mot_path and mot_lines and not timings_only:
         Path(mot_path).parent.mkdir(parents=True, exist_ok=True)
         Path(mot_path).write_text("\n".join(mot_lines) + "\n")
 
@@ -363,9 +365,13 @@ def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="
         longterm_reid_weight=0.25, longterm_reid_correction_thresh=0.5,
         longterm_reid_correction_thresh_low=0.5,
         no_video=False, reid_weights="clip_veri.pt", no_cmc=False,
-        with_reid=True, with_longterm_reid=True):
+        with_reid=True, with_longterm_reid=True, timings_only=False):
     model = YOLO(weights)
     class_names = model.names
+
+    # timings_only: pure benchmark — only timing CSVs are written (no video, no MOT).
+    if timings_only:
+        no_video = True
 
     clips = sorted(glob.glob(os.path.join(source_dir, "*")))
     clips = [c for c in clips if Path(c).suffix.lower() in {".mp4", ".mkv", ".avi", ".mov", ".ts"}]
@@ -391,7 +397,7 @@ def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="
         print(f"Cross-modal NMS enabled (iou_thresh={nms_iou_thresh}): {class_groups}")
 
     mot_dir = None
-    if save_mot:
+    if save_mot and not timings_only:
         mot_dir = out_dir / "mot"
         mot_dir.mkdir(parents=True, exist_ok=True)
 
@@ -454,7 +460,7 @@ def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="
             max_coast=max_coast, coast_cls_ids=coast_cls_ids,
             class_groups=class_groups, nms_iou_thresh=nms_iou_thresh,
             mot_path=mot_path, track_cls_ids=track_cls_ids,
-            timing_path=timing_path, no_video=no_video,
+            timing_path=timing_path, no_video=no_video, timings_only=timings_only,
         )
         if not no_video:
             size_mb = out_mp4.stat().st_size / 1e6
@@ -514,6 +520,8 @@ if __name__ == "__main__":
                         help="Save MOTChallenge-format tracking output to <out>/mot/")
     parser.add_argument("--no-video", action="store_true",
                         help="Skip video rendering — timing and MOT output only")
+    parser.add_argument("--timings-only", action="store_true",
+                        help="Pure benchmark — write only timing CSVs (no video, no MOT)")
     parser.add_argument("--reid-weights", default=None,
                         help="Path to ReID model weights (default: clip_veri.pt)")
     parser.add_argument("--no-cmc", action="store_true",
@@ -583,6 +591,7 @@ if __name__ == "__main__":
     if args.nms_iou_thresh is not None: p["nms_iou_thresh"] = args.nms_iou_thresh
     if args.save_mot: p["save_mot"] = True
     if args.no_video: p["no_video"] = True
+    if args.timings_only: p["timings_only"] = True
     if args.reid_weights is not None: p["reid_weights"] = args.reid_weights
     if args.no_cmc: p["no_cmc"] = True
     if args.longterm_bank_length is not None: p["longterm_bank_length"] = args.longterm_bank_length
