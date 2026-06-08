@@ -1,0 +1,7 @@
+# Tracking config: YOLO detector
+detection:
+  model_type: yolo
+  weights: results/yolo26l_split_v4_merged/weights/best.pt
+  device: cuda:0
+  conf: 0.3
+  iou: 0.5

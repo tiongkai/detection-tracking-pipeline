@@ -1,27 +1,44 @@
-"""YOLO + HybridSORT tracking pipeline with EMA box smoothing.
+"""Unified tracking pipeline with pluggable detection models.
 
-Runs YOLO detection → HybridSORT multi-object tracking → per-track
+Supports YOLO and RF-DETR detectors with config-driven model loading.
+Runs detection → HybridSORT multi-object tracking → per-track
 exponential moving average on box coordinates to reduce jitter.
 Outputs annotated MP4 videos, one per input clip.
 
-Usage:
-    conda run -n boat-tracker python pipeline/track/track_video.py \
+Usage with YAML config:
+    conda run -n boat-tracker python track/track_video.py \
+        --config configs/track_yolo.yaml \
+        --source /path/to/clips \
+        --out results/tracking_output
+
+Usage with command line (YOLO only):
+    conda run -n boat-tracker python track/track_video.py \
         --weights results/yolo26l_split_v1_v4_merged/weights/best.pt \
         --source /path/to/clips \
         --out results/tracking_output \
         --conf 0.3 --iou 0.5 --ema-alpha 0.5
+
+Usage with RF-DETR:
+    conda run -n boat-tracker python track/track_video.py \
+        --config configs/track_rfdetr.yaml \
+        --source /path/to/clips \
+        --out results/tracking_rfdetr
 """
 import argparse
 import glob
 import hashlib
 import os
-from collections import defaultdict
 from pathlib import Path
+import sys
 
 import cv2
 import numpy as np
 from boxmot import HybridSort
-from ultralytics import YOLO
+
+# Add parent directory to path for detection module imports
+sys.path.append(str(Path(__file__).parent.parent))
+from detection.factory import create_detector
+import yaml
 
 
 def get_color(track_id: int) -> tuple:
@@ -79,9 +96,13 @@ def draw_tracks(frame, tracks, class_names, smoother):
 
 
 def process_clip(
-    model, tracker, class_names, clip_path, out_path,
+    detector, tracker, clip_path, out_path,
     conf=0.3, iou=0.5, ema_alpha=0.5,
 ):
+    """Process a single video clip with given detector and tracker."""
+    # Get class names from detector
+    class_names = detector.class_names
+    
     cap = cv2.VideoCapture(clip_path)
     if not cap.isOpened():
         print(f"  ERROR: cannot open {clip_path}")
@@ -102,15 +123,18 @@ def process_clip(
             break
         frame_idx += 1
 
-        results = model.predict(frame, conf=conf, iou=iou, verbose=False)
-        r = results[0]
+        # Uniform interface: every detector accepts conf/iou and ignores what
+        # it doesn't use (RF-DETR has no NMS step, so it ignores iou).
+        detections = detector.predict(frame, conf=conf, iou=iou)
 
+        # Convert detections to boxmot format: [x1, y1, x2, y2, conf, cls]
         dets = np.empty((0, 6), dtype=np.float32)
-        if r.boxes is not None and len(r.boxes) > 0:
-            xyxy = r.boxes.xyxy.cpu().numpy()
-            confs = r.boxes.conf.cpu().numpy().reshape(-1, 1)
-            clss = r.boxes.cls.cpu().numpy().reshape(-1, 1)
-            dets = np.hstack([xyxy, confs, clss]).astype(np.float32)
+        if detections:
+            dets = np.array([
+                [d['bbox'][0], d['bbox'][1], d['bbox'][2], d['bbox'][3],
+                 d['confidence'], d['class_id']]
+                for d in detections
+            ], dtype=np.float32)
 
         tracks = tracker.update(dets, frame)
         if len(tracks) > 0:
@@ -125,15 +149,60 @@ def process_clip(
     writer.release()
 
 
-def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="cuda:0"):
-    model = YOLO(weights)
-    class_names = model.names
+def run(weights=None, source_dir=None, out_dir=None, 
+        config=None, conf=0.3, iou=0.5, ema_alpha=0.5, device="cuda:0",
+        model_type="yolo", model_size="base"):
+    """Run tracking with configurable detection model."""
+    
+    # Create detector based on config or weights
+    if config:
+        with open(config, 'r') as f:
+            cfg = yaml.safe_load(f)
+        
+        # Build detection config from experiment config
+        if 'detection' in cfg:
+            detection_config = dict(cfg['detection'])
+            detection_config.setdefault('device', device)
+        else:
+            detection_config = {
+                'model_type': cfg.get('model', 'yolo'),
+                'weights': cfg.get('weights'),
+                'device': device,
+                'size': cfg.get('size', 'base'),
+            }
 
+        # Command-line --weights overrides the config
+        if weights:
+            detection_config['weights'] = weights
+
+        if not detection_config.get('weights'):
+            raise ValueError(
+                "No detector weights found. Set 'weights' in the config's "
+                "detection section or pass --weights."
+            )
+
+        detector = create_detector(detection_config)
+    elif weights:
+        # Legacy command line mode
+        detection_config = {
+            'model_type': model_type,
+            'weights': weights,
+            'device': device,
+            'size': model_size
+        }
+        detector = create_detector(detection_config)
+    else:
+        raise ValueError("Either --config or --weights must be provided")
+    
+    class_names = detector.class_names
+    
+    # Find video clips
     clips = sorted(glob.glob(os.path.join(source_dir, "*")))
     clips = [c for c in clips if Path(c).suffix.lower() in {".mp4", ".mkv", ".avi", ".mov", ".ts"}]
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    print(f"Detection model: {detection_config.get('model_type', 'yolo')}")
     print(f"Processing {len(clips)} clips -> {out_dir}")
     print(f"Classes: {class_names}")
     print(f"Tracker: HybridSORT | EMA alpha: {ema_alpha} | conf: {conf} | device: {device}")
@@ -159,7 +228,8 @@ def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="
         )
 
         print(f"[{i+1}/{len(clips)}] {name}", flush=True)
-        process_clip(model, tracker, class_names, clip, out_mp4, conf=conf, iou=iou, ema_alpha=ema_alpha)
+        process_clip(detector, tracker, clip, out_mp4, 
+                    conf=conf, iou=iou, ema_alpha=ema_alpha)
         size_mb = out_mp4.stat().st_size / 1e6
         print(f"  -> {out_mp4.name} ({size_mb:.1f} MB)")
 
@@ -168,16 +238,32 @@ def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="YOLO + HybridSORT tracking with EMA box smoothing"
+        description="Unified tracking pipeline with pluggable detection models"
     )
-    parser.add_argument("--weights", required=True, help="Path to YOLO .pt weights")
-    parser.add_argument("--source", required=True, help="Directory of video clips")
-    parser.add_argument("--out", required=True, help="Output directory for annotated videos")
-    parser.add_argument("--conf", type=float, default=0.3, help="Detection confidence threshold")
-    parser.add_argument("--iou", type=float, default=0.5, help="NMS IoU threshold")
+    parser.add_argument("--config", default=None, 
+                       help="Path to experiment config YAML (sets model type, weights)")
+    parser.add_argument("--weights", default=None, 
+                       help="Path to detection model weights (overrides config)")
+    parser.add_argument("--source", required=True, 
+                       help="Directory of video clips")
+    parser.add_argument("--out", required=True, 
+                       help="Output directory for annotated videos")
+    parser.add_argument("--conf", type=float, default=0.3, 
+                       help="Detection confidence threshold")
+    parser.add_argument("--iou", type=float, default=0.5, 
+                       help="NMS IoU threshold (YOLO only)")
     parser.add_argument("--ema-alpha", type=float, default=1.0,
-                        help="EMA smoothing factor (0=full history, 1=no smoothing)")
-    parser.add_argument("--device", default="cuda:0", help="Torch device")
+                       help="EMA smoothing factor (0=full history, 1=no smoothing)")
+    parser.add_argument("--device", default="cuda:0", 
+                       help="Torch device")
+    parser.add_argument("--model-type", default="yolo", choices=["yolo", "rfdetr"],
+                       help="Detection model type (when --weights is used without --config)")
+    parser.add_argument("--model-size", default="base", choices=["base", "large"],
+                       help="RF-DETR model size (base or large)")
+    
     args = parser.parse_args()
-    run(args.weights, args.source, args.out,
-        conf=args.conf, iou=args.iou, ema_alpha=args.ema_alpha, device=args.device)
+    
+    run(weights=args.weights, source_dir=args.source, out_dir=args.out,
+        config=args.config, conf=args.conf, iou=args.iou, 
+        ema_alpha=args.ema_alpha, device=args.device,
+        model_type=args.model_type, model_size=args.model_size)

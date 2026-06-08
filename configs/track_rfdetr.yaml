@@ -1,0 +1,11 @@
+# Tracking config: RF-DETR detector
+detection:
+  model_type: rfdetr
+  weights: weights/rfdetr_base.pth
+  size: base            # base | large
+  device: cuda:0
+  conf: 0.3
+  # class_names maps the trained model's class ids to names. Without this,
+  # RF-DETR falls back to COCO-80 and detections will be mislabeled.
+  class_names:
+    0: boat
