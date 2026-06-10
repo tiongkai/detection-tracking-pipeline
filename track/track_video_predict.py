@@ -23,7 +23,9 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from boxmot import HybridSort
+# Vendored HybridSort with the best-frame ReID gallery feature.
+# Defaults to "fifo" gallery, which reproduces stock boxmot HybridSort behavior.
+from hybridsort_bestframe import HybridSort
 from boxmot.trackers.hybridsort.hybridsort import convert_x_to_bbox
 from ultralytics import YOLO
 from cross_modal_nms import cross_modal_nms
@@ -365,7 +367,8 @@ def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="
         longterm_reid_weight=0.25, longterm_reid_correction_thresh=0.5,
         longterm_reid_correction_thresh_low=0.5,
         no_video=False, reid_weights="clip_veri.pt", no_cmc=False,
-        with_reid=True, with_longterm_reid=True, timings_only=False):
+        with_reid=True, with_longterm_reid=True, timings_only=False,
+        reid_gallery="fifo", gallery_k=12, gallery_diversity=0.10):
     model = YOLO(weights)
     class_names = model.names
 
@@ -403,7 +406,9 @@ def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="
 
     print(f"Processing {len(clips)} clips -> {out_dir}")
     print(f"Classes: {class_names}")
-    print(f"ReID: {reid_weights} | Video output: {'OFF' if no_video else 'ON'}")
+    gallery_desc = reid_gallery if not with_reid else (
+        f"{reid_gallery}" + (f"(k={gallery_k},div={gallery_diversity})" if reid_gallery == "best" else ""))
+    print(f"ReID: {reid_weights} | gallery: {gallery_desc} | Video output: {'OFF' if no_video else 'ON'}")
     print(f"Tracker: HybridSORT | tracker_iou={tracker_iou} alpha={alpha} max_age={max_age} "
           f"longterm_bank={longterm_bank_length} longterm_w={longterm_reid_weight} "
           f"correction_thresh={longterm_reid_correction_thresh}")
@@ -443,6 +448,9 @@ def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="
             with_longterm_reid_correction=with_longterm_reid,
             longterm_reid_correction_thresh=longterm_reid_correction_thresh,
             longterm_reid_correction_thresh_low=longterm_reid_correction_thresh_low,
+            reid_gallery=reid_gallery,
+            gallery_k=gallery_k,
+            gallery_diversity=gallery_diversity,
         )
 
         if no_cmc:
@@ -533,6 +541,13 @@ if __name__ == "__main__":
                         help="Disable long-term ReID bank + correction (ablation)")
     parser.add_argument("--no-reid", action="store_true",
                         help="Disable ReID entirely — no crop extraction or embeddings (ablation)")
+    parser.add_argument("--reid-gallery", choices=["fifo", "best"], default=None,
+                        help="ReID appearance gallery: 'fifo' (stock, last-N mean) or "
+                             "'best' (top-k highest-confidence diverse views)")
+    parser.add_argument("--gallery-k", type=int, default=None,
+                        help="Number of best frames to keep per track (--reid-gallery best). Default 12")
+    parser.add_argument("--gallery-diversity", type=float, default=None,
+                        help="Min cosine distance between kept views (--reid-gallery best). Default 0.10")
     parser.add_argument("--device", default=None, help="Torch device")
     args = parser.parse_args()
 
@@ -544,6 +559,7 @@ if __name__ == "__main__":
         tracker_iou=0.15, max_age=180, alpha=0.7, longterm_bank_length=150,
         longterm_reid_weight=0.25, longterm_reid_correction_thresh=0.5,
         longterm_reid_correction_thresh_low=0.5,
+        reid_gallery="fifo", gallery_k=12, gallery_diversity=0.10,
     )
 
     # Apply config file values
@@ -567,6 +583,9 @@ if __name__ == "__main__":
             "longterm_reid_weight": trk.get("longterm_reid_weight"),
             "longterm_reid_correction_thresh": trk.get("longterm_reid_correction_thresh"),
             "longterm_reid_correction_thresh_low": trk.get("longterm_reid_correction_thresh_low"),
+            "reid_gallery": trk.get("reid_gallery"),
+            "gallery_k": trk.get("gallery_k"),
+            "gallery_diversity": trk.get("gallery_diversity"),
             "max_coast": kal.get("max_coast"),
             "track_classes": (
                 [det["track_classes"]] if isinstance(det.get("track_classes"), str)
@@ -597,6 +616,9 @@ if __name__ == "__main__":
     if args.longterm_bank_length is not None: p["longterm_bank_length"] = args.longterm_bank_length
     if args.no_longterm_reid: p["with_longterm_reid"] = False
     if args.no_reid: p["with_reid"] = False
+    if args.reid_gallery is not None: p["reid_gallery"] = args.reid_gallery
+    if args.gallery_k is not None: p["gallery_k"] = args.gallery_k
+    if args.gallery_diversity is not None: p["gallery_diversity"] = args.gallery_diversity
     if args.device is not None: p["device"] = args.device
 
     # Resolve output directory: CLI > config parent dir > error
