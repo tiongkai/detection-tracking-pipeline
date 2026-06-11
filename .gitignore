@@ -14,6 +14,21 @@ env/
 *.onnx
 *.engine
 
+# Large artifacts / generated outputs
+results/
+runs/
+eval_videos/
+wavy-boats/
+export/onnx/
+export/engines/
+
+# Eval video clips (kept locally, not in git)
+*.mp4
+*.mkv
+*.avi
+data/eval/vws-eval-set/
+data/eval/gt/mot_backup/
+
 # OS / editor
 .DS_Store
 *.swp
