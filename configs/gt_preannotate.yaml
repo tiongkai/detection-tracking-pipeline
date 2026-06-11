@@ -1,0 +1,36 @@
+experiment: gt-preannotation
+name: wavy-boats GT pre-annotation
+date: 2026-06-04
+description: >
+  Pseudo-labeling run to seed ground truth for a new eval set (wavy-boats).
+  Detects boats, people, and outboard motors. Recall-leaning (low conf) since
+  a human curates afterward — over-detect and delete beats missing objects.
+  Curate to boats-of-interest (+ spatially associated people/motors) after.
+
+tracker:
+  iou_threshold: 0.15
+  alpha: 0.7
+  longterm_reid_correction_thresh: 0.5
+  longterm_reid_correction_thresh_low: 0.5
+  EG_weight_high_score: 4.6
+  det_thresh: 0.2            # lower than eval (0.3) — recall for pre-annotation
+  max_age: 180
+  min_hits: 3
+  longterm_bank_length: 150
+  longterm_reid_weight: 0.25
+
+detection:
+  track_classes: [boat, human, outboard motor]   # whole-body human, not head/torso
+  conf: 0.2                 # recall-leaning
+  iou: 0.5
+  enable_nms: true          # harmless on RGB-only footage (no thermal duplicates)
+  nms_iou_thresh: 0.5
+
+kalman:
+  max_coast: 10             # coasting boxes flagged via visibility<1.0 in MOT
+  coast_classes: [boat, human, outboard motor]
+
+eval:
+  iou_threshold: 0.5
+
+gt: data/eval/gt/mot
