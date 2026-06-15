@@ -18,12 +18,17 @@ Design: `docs/degradation_eval_design.md`. Working eval set: `eval_videos/wavy-b
       tracking/ReID ability. Smoke (seg1): boat + 2 humans held perfectly; **2 humans
       (GT 2 & 4) swap IDs even with perfect boxes** → pure ReID/association failure.
 - [ ] Run GT-dets on all 4 clips + proper IDF1/HOTA via `eval/eval_tracking.py`.
-- [ ] `eval/degrade.py` — corruption transforms (low-light, compression, grayscale,
-      invert, blur/weather, camera-shake) + box transform for shake. Seeded/deterministic.
-- [ ] `track/track_video_predict.py` — add `--degrade --severity --degrade-seed --save-degraded`.
-- [ ] `eval/robustness_sweep.py` — corruption×severity matrix → degradation curves + tables.
-- [ ] Two probes: (a) **YOLO on degraded** = detector robustness; (b) **GT-dets + degraded
-      image** = tracker/ReID robustness in isolation.
+- [x] `eval/degrade.py` — **standalone data generator** (decoupled from inference, per
+      user pref: track_video_predict.py stays pure inference). Writes augmented videos +
+      GT to `eval_videos/wavy-boats/aug/<kind>_s<sev>/{videos,labels}/`. Geometry-preserving
+      kinds (lowlight, grayscale, invert, jpeg, motion_blur, defocus, contrast, fog)
+      re-emit GT unchanged; **shake** affine-warps frame + GT together. Seeded/deterministic.
+      Smoke-tested on seg1 (lowlight/jpeg/shake); shake GT alignment verified.
+- [ ] Generate the full augment set (all kinds × severities) over the 4 wavy-boats clips.
+- [ ] `eval/robustness_sweep.py` — drive: generate (degrade.py) → infer (track_video_predict)
+      → score (eval_tracking) across the matrix → degradation curves + tables.
+- [ ] Two probes: (a) **YOLO on degraded** = detector robustness; (b) **GT-dets on degraded
+      video** (`--gt-dets`) = tracker/ReID robustness in isolation.
 - [ ] Headline run: **camera shake × {ECC on, ECC off}**; cross-cut: grayscale/invert × ID retention.
 - **Needs from user:** realistic severity anchors — live-stream **bitrate/codec** (for
       compression) and ideally a real **dusk/night** reference (for low-light).
