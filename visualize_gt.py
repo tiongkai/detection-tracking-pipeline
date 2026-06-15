@@ -103,18 +103,24 @@ def main():
                         help="Output directory for rendered videos")
     parser.add_argument("--seq", default=None,
                         help="Process only this sequence name (omit to process all)")
+    parser.add_argument("--flat", action="store_true",
+                        help="Flat layout: gt-dir holds <seq>.txt files (matched to "
+                             "<seq>.<ext> in video-dir) instead of <seq>/gt.txt folders")
     args = parser.parse_args()
 
     base = Path(__file__).resolve().parent
-    gt_dir = base / args.gt_dir
-    video_dir = base / args.video_dir
-    output_dir = base / args.output_dir
+    gt_dir = (Path(args.gt_dir) if Path(args.gt_dir).is_absolute() else base / args.gt_dir)
+    video_dir = (Path(args.video_dir) if Path(args.video_dir).is_absolute() else base / args.video_dir)
+    output_dir = (Path(args.output_dir) if Path(args.output_dir).is_absolute() else base / args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    sequences = sorted([
-        d.name for d in gt_dir.iterdir()
-        if d.is_dir() and (d / "gt.txt").exists()
-    ])
+    if args.flat:
+        sequences = sorted(p.stem for p in gt_dir.glob("*.txt"))
+    else:
+        sequences = sorted([
+            d.name for d in gt_dir.iterdir()
+            if d.is_dir() and (d / "gt.txt").exists()
+        ])
 
     if args.seq:
         if args.seq not in sequences:
@@ -125,7 +131,7 @@ def main():
     print(f"Processing {len(sequences)} sequences...")
     ok, fail = 0, 0
     for seq in sequences:
-        gt_path = gt_dir / seq / "gt.txt"
+        gt_path = (gt_dir / f"{seq}.txt") if args.flat else (gt_dir / seq / "gt.txt")
         video_path = None
         for ext in (".mp4", ".mkv", ".avi"):
             candidate = video_dir / f"{seq}{ext}"

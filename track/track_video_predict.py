@@ -176,11 +176,33 @@ def draw_tracks(frame, tracks, coasting, class_names, smoother):
     smoother.prune(active_ids)
 
 
+def load_gt_dets(path, conf_override=1.0):
+    """Load a MOT-format file into {frame_idx: ndarray[N,6]} of [x1,y1,x2,y2,conf,cls].
+
+    Used for GT-as-detections mode: ground-truth boxes are fed to the tracker in
+    place of detector output, so tracking/ReID can be evaluated independently of
+    detection quality. The conf column is overridden (default 1.0) so every GT box
+    is treated as a confident detection regardless of the GT file's own conf value.
+    """
+    rows = defaultdict(list)
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(",")
+            frame = int(float(parts[0]))
+            x, y, w, h = float(parts[2]), float(parts[3]), float(parts[4]), float(parts[5])
+            cls = int(float(parts[7])) if len(parts) > 7 else 0
+            rows[frame].append([x, y, x + w, y + h, conf_override, cls])
+    return {fr: np.array(v, dtype=np.float32) for fr, v in rows.items()}
+
+
 def process_clip(
     model, tracker, class_names, clip_path, out_path,
     conf=0.3, iou=0.5, ema_alpha=0.5, det_interval=1, max_coast=30, coast_cls_ids=None,
     class_groups=None, nms_iou_thresh=0.5, mot_path=None, track_cls_ids=None,
-    timing_path=None, no_video=False, timings_only=False,
+    timing_path=None, no_video=False, timings_only=False, gt_dets=None,
 ):
     # timings_only is the strictest output mode: no video AND no MOT (pure benchmark).
     no_video = no_video or timings_only
@@ -217,7 +239,13 @@ def process_clip(
         n_dets_before_nms = 0
         n_dets_after_nms = 0
 
-        if run_det:
+        if gt_dets is not None:
+            # GT-as-detections mode: feed ground-truth boxes to the tracker instead
+            # of YOLO output, isolating tracking/ReID ability from detection quality.
+            # The image `frame` is still passed to tracker.update so ReID runs on the
+            # (possibly degraded) crops.
+            dets = gt_dets.get(frame_idx, np.empty((0, 6), dtype=np.float32))
+        elif run_det:
             t0 = time.perf_counter()
             results = model.predict(frame, conf=conf, iou=iou, verbose=False)
             t_det = time.perf_counter() - t0
@@ -234,7 +262,7 @@ def process_clip(
             dets = dets[mask]
 
         n_dets_before_nms = len(dets)
-        if class_groups and len(dets) > 0:
+        if gt_dets is None and class_groups and len(dets) > 0:
             t0 = time.perf_counter()
             dets = cross_modal_nms(dets, class_groups, nms_iou_thresh)
             t_nms = time.perf_counter() - t0
@@ -368,9 +396,12 @@ def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="
         longterm_reid_correction_thresh_low=0.5,
         no_video=False, reid_weights="clip_veri.pt", no_cmc=False,
         with_reid=True, with_longterm_reid=True, timings_only=False,
-        reid_gallery="fifo", gallery_k=12, gallery_diversity=0.10):
+        reid_gallery="fifo", gallery_k=12, gallery_diversity=0.10,
+        gt_dets_dir=None):
     model = YOLO(weights)
     class_names = model.names
+    if gt_dets_dir is not None:
+        print(f"GT-as-detections mode: feeding GT boxes from {gt_dets_dir} (YOLO bypassed)")
 
     # timings_only: pure benchmark — only timing CSVs are written (no video, no MOT).
     if timings_only:
@@ -461,6 +492,14 @@ def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="
 
         mot_path = str(mot_dir / f"{name}.txt") if mot_dir else None
 
+        gt_dets = None
+        if gt_dets_dir is not None:
+            gt_file = Path(gt_dets_dir) / f"{name}.txt"
+            if not gt_file.exists():
+                print(f"[{i+1}/{len(clips)}] SKIP {name}: no GT-dets file {gt_file.name}")
+                continue
+            gt_dets = load_gt_dets(gt_file)
+
         print(f"[{i+1}/{len(clips)}] {name} (det every {det_interval} frame(s))", flush=True)
         frame_timings = process_clip(
             model, tracker, class_names, clip, out_mp4,
@@ -469,6 +508,7 @@ def run(weights, source_dir, out_dir, conf=0.3, iou=0.5, ema_alpha=0.5, device="
             class_groups=class_groups, nms_iou_thresh=nms_iou_thresh,
             mot_path=mot_path, track_cls_ids=track_cls_ids,
             timing_path=timing_path, no_video=no_video, timings_only=timings_only,
+            gt_dets=gt_dets,
         )
         if not no_video:
             size_mb = out_mp4.stat().st_size / 1e6
@@ -549,6 +589,11 @@ if __name__ == "__main__":
     parser.add_argument("--gallery-diversity", type=float, default=None,
                         help="Min cosine distance between kept views (--reid-gallery best). Default 0.10")
     parser.add_argument("--device", default=None, help="Torch device")
+    parser.add_argument("--gt-dets", default=None,
+                        help="Directory of MOT-format GT files (<clip>.txt). When set, GT "
+                             "boxes are fed to the tracker as detections instead of YOLO, "
+                             "isolating tracking/ReID ability from detection quality. "
+                             "ReID still runs on the (possibly degraded) image crops.")
     args = parser.parse_args()
 
     # Base defaults
@@ -620,6 +665,7 @@ if __name__ == "__main__":
     if args.gallery_k is not None: p["gallery_k"] = args.gallery_k
     if args.gallery_diversity is not None: p["gallery_diversity"] = args.gallery_diversity
     if args.device is not None: p["device"] = args.device
+    if args.gt_dets is not None: p["gt_dets_dir"] = args.gt_dets
 
     # Resolve output directory: CLI > config parent dir > error
     out = args.out

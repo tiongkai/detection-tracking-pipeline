@@ -9,14 +9,22 @@ Legend: 🔴 blocked · 🟡 ready · 🟢 in progress · ✅ done
 
 ## Active / ready
 
-### 🟡 Degradation-robustness eval — build
-Design agreed: `docs/degradation_eval_design.md`. Build on `dev/degradation-eval` off `main`.
+### 🟢 Degradation-robustness eval — build (branch `dev/degradation-eval`)
+Design: `docs/degradation_eval_design.md`. Working eval set: `eval_videos/wavy-boats/`
+(4 Haulover clips, 1080p/60fps, MOT GT in `labels/`, classes 0=boat 2=human).
+- [x] Annotated GT videos rendered → `results/wavy_boats_gt/` (via `visualize_gt.py --flat`).
+- [x] **GT-as-detections mode** — `track_video_predict.py --gt-dets <labels-dir>`: feeds GT
+      boxes as detections (YOLO bypassed), ReID still runs on image crops → isolates pure
+      tracking/ReID ability. Smoke (seg1): boat + 2 humans held perfectly; **2 humans
+      (GT 2 & 4) swap IDs even with perfect boxes** → pure ReID/association failure.
+- [ ] Run GT-dets on all 4 clips + proper IDF1/HOTA via `eval/eval_tracking.py`.
 - [ ] `eval/degrade.py` — corruption transforms (low-light, compression, grayscale,
       invert, blur/weather, camera-shake) + box transform for shake. Seeded/deterministic.
 - [ ] `track/track_video_predict.py` — add `--degrade --severity --degrade-seed --save-degraded`.
 - [ ] `eval/robustness_sweep.py` — corruption×severity matrix → degradation curves + tables.
-- [ ] Headline run: **camera shake × {ECC on, ECC off}** on `vws-eval-set`.
-- [ ] Cross-cuts: grayscale/invert × ID retention (ReID probe).
+- [ ] Two probes: (a) **YOLO on degraded** = detector robustness; (b) **GT-dets + degraded
+      image** = tracker/ReID robustness in isolation.
+- [ ] Headline run: **camera shake × {ECC on, ECC off}**; cross-cut: grayscale/invert × ID retention.
 - **Needs from user:** realistic severity anchors — live-stream **bitrate/codec** (for
       compression) and ideally a real **dusk/night** reference (for low-light).
 
