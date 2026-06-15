@@ -218,7 +218,13 @@ def degrade_video(in_path, out_path, kind, severity, seed=0,
                                    float(p[2]) + float(p[4]), float(p[3]) + float(p[5])]
                                   for p in rows], np.float32)
                 wb = apply_affine_boxes(boxes, M)
+                # clamp to frame; drop boxes that shook (partly) out of view, else a
+                # zero-size crop would crash downstream ReID (cv2.resize on empty).
+                wb[:, [0, 2]] = wb[:, [0, 2]].clip(0, w)
+                wb[:, [1, 3]] = wb[:, [1, 3]].clip(0, h)
                 for p, b in zip(rows, wb):
+                    if (b[2] - b[0]) < 2 or (b[3] - b[1]) < 2:
+                        continue
                     q = list(p)
                     q[2], q[3] = f"{b[0]:.2f}", f"{b[1]:.2f}"
                     q[4], q[5] = f"{b[2]-b[0]:.2f}", f"{b[3]-b[1]:.2f}"
