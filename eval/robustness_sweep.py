@@ -78,11 +78,15 @@ def ensure_generated(kind, sev, videos, labels, aug_root, seed):
     return str(vdir), str(ldir)
 
 
-def run_inference(probe, video_dir, label_dir, out_dir, reid, det_weights, gtdet_weights):
-    """Run track_video_predict for one probe over a video dir (skip if MOT exists)."""
-    mot_dir = Path(out_dir) / "mot"
-    if mot_dir.exists() and any(mot_dir.glob("*.txt")):
-        print(f"    infer {probe}: SKIP (MOT exists)", flush=True)
+def run_inference(probe, video_dir, label_dir, out_dir, reid, det_weights, gtdet_weights, expected):
+    """Run track_video_predict for one probe. Clip-level resume: skip only when all
+    `expected` clips already have MOT; otherwise invoke (track_video_predict itself
+    skips per-clip via its timing CSV, so partial conditions resume cleanly)."""
+    out_dir = Path(out_dir)
+    mot_dir = out_dir / "mot"
+    existing = len(list(mot_dir.glob("*.txt"))) if mot_dir.exists() else 0
+    if expected and existing >= expected:
+        print(f"    infer {probe}: SKIP (complete {existing}/{expected})", flush=True)
         return mot_dir
     cmd = [sys.executable, str(ROOT / "track" / "track_video_predict.py"),
            "--source", str(video_dir), "--out", str(out_dir),
@@ -91,9 +95,10 @@ def run_inference(probe, video_dir, label_dir, out_dir, reid, det_weights, gtdet
         cmd += ["--weights", str(gtdet_weights), "--gt-dets", str(label_dir)]
     else:
         cmd += ["--weights", str(det_weights)]
-    print(f"    infer {probe}: running...", flush=True)
-    subprocess.run(cmd, cwd=str(ROOT), check=True,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print(f"    infer {probe}: running ({existing}/{expected} done)...", flush=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with open(out_dir / "infer.log", "w") as lf:
+        subprocess.run(cmd, cwd=str(ROOT), check=True, stdout=lf, stderr=subprocess.STDOUT)
     return mot_dir
 
 
@@ -130,6 +135,9 @@ def main():
     ap.add_argument("--det-weights", default="weights/best.engine")
     ap.add_argument("--gtdet-weights", default="weights/best.pt")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--cleanup-aug", action="store_true",
+                    help="delete each condition's augmented videos after inference "
+                         "(keeps GT + MOT); bounds disk for large eval sets")
     args = ap.parse_args()
 
     videos, labels = ROOT / args.videos, ROOT / args.labels
@@ -149,22 +157,42 @@ def main():
     # agg[(probe, kind)] = {sev: {metric: mean}}
     agg = {}
 
+    n_src = len(video_stems(videos))                    # full source clip count
     for cond_kind, sev in conditions:
+        cond_name = "clean" if cond_kind == "clean" else f"{cond_kind}_s{sev}"
         if cond_kind == "clean":
             vdir, ldir = str(videos), str(labels)
             label_keys = [(k, 0) for k in args.kinds]   # clean is the sev-0 point for every kind
         else:
-            print(f"[generate] {cond_kind} s{sev}", flush=True)
-            vdir, ldir = ensure_generated(cond_kind, sev, videos, labels, ROOT / args.aug_root, args.seed)
+            ldir = str(ROOT / args.aug_root / cond_name / "labels")
+            vdir = str(ROOT / args.aug_root / cond_name / "videos")
             label_keys = [(cond_kind, sev)]
 
+        # completion reference: GT label files are kept even after --cleanup-aug, so
+        # use them (fallback to source count) to decide if regeneration is needed.
+        n_lab = len(list(Path(ldir).glob("*.txt"))) if Path(ldir).exists() else 0
+        expected = n_lab or n_src
+        done = all(
+            (out_root / p / cond_name / "mot").exists()
+            and len(list((out_root / p / cond_name / "mot").glob("*.txt"))) >= expected
+            for p in args.probes)
+
+        if cond_kind != "clean" and not done:
+            print(f"[generate] {cond_name}", flush=True)
+            ensure_generated(cond_kind, sev, videos, labels, ROOT / args.aug_root, args.seed)
+            n_lab = len(list(Path(ldir).glob("*.txt")))
+            expected = n_lab or n_src
+
         for probe in args.probes:
-            cond_name = f"{cond_kind}_s{sev}" if cond_kind != "clean" else "clean"
             out_dir = out_root / probe / cond_name
             print(f"[{probe}] {cond_name}", flush=True)
-            mot_dir = run_inference(probe, vdir, ldir, out_dir, ROOT / args.reid,
-                                    ROOT / args.det_weights, ROOT / args.gtdet_weights)
-            rows = score(ldir, mot_dir)
+            try:
+                mot_dir = run_inference(probe, vdir, ldir, out_dir, ROOT / args.reid,
+                                        ROOT / args.det_weights, ROOT / args.gtdet_weights, expected)
+                rows = score(ldir, mot_dir)
+            except Exception as e:
+                print(f"    !! {probe} {cond_name} FAILED: {e} (see {out_dir/'infer.log'}); continuing", flush=True)
+                continue
             for r in rows:
                 r.update({"probe": probe, "kind": cond_kind, "severity": sev})
                 all_rows.append(r)
@@ -173,6 +201,13 @@ def main():
                                       if summary[m] == summary[m]), flush=True)
             for (k, s) in label_keys:
                 agg.setdefault((probe, k), {})[s] = summary
+
+        # free disk: drop this condition's aug videos once both probes are done
+        if args.cleanup_aug and cond_kind != "clean":
+            import shutil
+            shutil.rmtree(Path(ROOT / args.aug_root) / f"{cond_kind}_s{sev}" / "videos",
+                          ignore_errors=True)
+            print(f"    cleanup: removed {cond_kind}_s{sev}/videos", flush=True)
 
     # ---- write CSV ----
     keys = sorted({k for r in all_rows for k in r})
