@@ -61,7 +61,8 @@ def _invert(img, sev, rng):
 
 
 def _jpeg(img, sev, rng):
-    q = [75, 55, 40, 28, 18][sev - 1]
+    # aggressive ladder so blocking is clearly visible even at 1080p
+    q = [40, 25, 15, 8, 4][sev - 1]
     ok, enc = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, q])
     return cv2.imdecode(enc, cv2.IMREAD_COLOR) if ok else img
 

@@ -19,7 +19,6 @@ both probes, OSNet TRT ReID. Resumable: skips already-generated videos and exist
 import argparse
 import subprocess
 import sys
-from itertools import product
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -28,6 +27,31 @@ from degrade import degrade_video                       # noqa: E402
 from eval_tracking import load_mot, evaluate_sequence_custom  # noqa: E402
 
 FOCUS_METRICS = ["Recall", "Precision", "IDF1", "IDsw", "MOTA", "HOTA"]
+
+# Binary corruptions (no severity ladder) — run once.
+BINARY_KINDS = {"grayscale", "invert"}
+
+# Detector-class normalization for scoring (per user): ignore head & torso
+# (rgb 4,5 + thermal 10,11), and map thermal detections to their rgb base
+# (6->0,7->1,8->2,9->3). This is what lets grayscale/invert — which make the
+# detector fire thermal-domain classes — still match the rgb GT. GT is already
+# rgb {0,2,3} with no head/torso, so this only affects the detector (yolo) probe.
+_DROP_CLS = {4, 5, 10, 11}
+
+
+def normalize_pred(data):
+    out = {}
+    for fr, entries in data.items():
+        kept = []
+        for e in entries:
+            cls = int(e[6])
+            if cls in _DROP_CLS:
+                continue
+            if cls >= 6:
+                cls -= 6                                # thermal -> rgb base
+            kept.append(e[:6] + (cls,) + e[7:])
+        out[fr] = kept
+    return out
 
 
 def video_stems(video_dir):
@@ -80,7 +104,7 @@ def score(label_dir, mot_dir):
         pred_file = Path(mot_dir) / gt_file.name
         if not pred_file.exists():
             continue
-        gt_data, pred_data = load_mot(str(gt_file)), load_mot(str(pred_file))
+        gt_data, pred_data = load_mot(str(gt_file)), normalize_pred(load_mot(str(pred_file)))
         metrics, _ = evaluate_sequence_custom(gt_data, pred_data, 0.5)
         metrics["clip"] = gt_file.stem
         rows.append(metrics)
@@ -112,8 +136,14 @@ def main():
     out_root = ROOT / args.out
     out_root.mkdir(parents=True, exist_ok=True)
 
-    # conditions: clean baseline (severity 0) + (kind × severity)
-    conditions = [("clean", 0)] + list(product(args.kinds, args.sevs))
+    # conditions: clean baseline (severity 0) + (kind × severity); binary kinds
+    # (grayscale/invert) run once at severity 1.
+    conditions = [("clean", 0)]
+    for k in args.kinds:
+        if k in BINARY_KINDS:
+            conditions.append((k, 1))
+        else:
+            conditions += [(k, s) for s in args.sevs]
 
     all_rows = []  # flat per-clip rows for CSV
     # agg[(probe, kind)] = {sev: {metric: mean}}
