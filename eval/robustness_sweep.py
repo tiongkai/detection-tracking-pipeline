@@ -59,10 +59,20 @@ def video_stems(video_dir):
                   if p.suffix.lower() in {".mp4", ".mkv", ".avi", ".mov"})
 
 
-def ensure_generated(kind, sev, videos, labels, aug_root, seed):
-    """Generate augmented videos+GT for (kind,sev) if missing. Returns (vdir, ldir)."""
+def _gen_one(t):
+    src, vpath, kind, sev, seed, gt_in, gt_out = t
+    n = degrade_video(src, vpath, kind, sev, seed, gt_in, gt_out)
+    return Path(vpath).stem, n
+
+
+def ensure_generated(kind, sev, videos, labels, aug_root, seed, workers=32):
+    """Generate augmented videos+GT for (kind,sev) if missing, in parallel across
+    clips (each clip is an independent cv2/numpy job). Returns (vdir, ldir)."""
     out = Path(aug_root) / f"{kind}_s{sev}"
     vdir, ldir = out / "videos", out / "labels"
+    vdir.mkdir(parents=True, exist_ok=True)
+    ldir.mkdir(parents=True, exist_ok=True)
+    tasks = []
     for stem in video_stems(videos):
         vpath = vdir / f"{stem}.mp4"
         if vpath.exists():
@@ -71,10 +81,18 @@ def ensure_generated(kind, sev, videos, labels, aug_root, seed):
         # glob would interpret as a character class.
         src = next(p for p in Path(videos).iterdir() if p.stem == stem)
         gt_in = Path(labels) / f"{stem}.txt"
-        gt_in = gt_in if gt_in.exists() else None
-        gt_out = (ldir / f"{stem}.txt") if gt_in else None
-        n = degrade_video(src, vpath, kind, sev, seed, gt_in, gt_out)
-        print(f"    gen {kind} s{sev} {stem}: {n} frames", flush=True)
+        gt_in = str(gt_in) if gt_in.exists() else None
+        gt_out = str(ldir / f"{stem}.txt") if gt_in else None
+        tasks.append((str(src), str(vpath), kind, sev, seed, gt_in, gt_out))
+    if tasks:
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        done = 0
+        with ProcessPoolExecutor(max_workers=min(workers, len(tasks))) as ex:
+            futs = [ex.submit(_gen_one, t) for t in tasks]
+            for f in as_completed(futs):
+                stem, n = f.result()
+                done += 1
+                print(f"    gen {kind} s{sev} [{done}/{len(tasks)}] {stem[:48]}: {n} frames", flush=True)
     return str(vdir), str(ldir)
 
 
@@ -135,6 +153,8 @@ def main():
     ap.add_argument("--det-weights", default="weights/best.engine")
     ap.add_argument("--gtdet-weights", default="weights/best.pt")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--gen-workers", type=int, default=32,
+                    help="parallel processes for augment generation (CPU-bound)")
     ap.add_argument("--cleanup-aug", action="store_true",
                     help="delete each condition's augmented videos after inference "
                          "(keeps GT + MOT); bounds disk for large eval sets")
@@ -179,7 +199,8 @@ def main():
 
         if cond_kind != "clean" and not done:
             print(f"[generate] {cond_name}", flush=True)
-            ensure_generated(cond_kind, sev, videos, labels, ROOT / args.aug_root, args.seed)
+            ensure_generated(cond_kind, sev, videos, labels, ROOT / args.aug_root,
+                             args.seed, args.gen_workers)
             n_lab = len(list(Path(ldir).glob("*.txt")))
             expected = n_lab or n_src
 
