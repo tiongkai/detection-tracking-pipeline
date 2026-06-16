@@ -96,7 +96,8 @@ def ensure_generated(kind, sev, videos, labels, aug_root, seed, workers=32):
     return str(vdir), str(ldir)
 
 
-def run_inference(probe, video_dir, label_dir, out_dir, reid, det_weights, gtdet_weights, expected):
+def run_inference(probe, video_dir, label_dir, out_dir, reid, det_weights, gtdet_weights,
+                  expected, no_cmc=False):
     """Run track_video_predict for one probe. Clip-level resume: skip only when all
     `expected` clips already have MOT; otherwise invoke (track_video_predict itself
     skips per-clip via its timing CSV, so partial conditions resume cleanly)."""
@@ -109,6 +110,8 @@ def run_inference(probe, video_dir, label_dir, out_dir, reid, det_weights, gtdet
     cmd = [sys.executable, str(ROOT / "track" / "track_video_predict.py"),
            "--source", str(video_dir), "--out", str(out_dir),
            "--reid-weights", str(reid), "--save-mot", "--no-video"]
+    if no_cmc:
+        cmd += ["--no-cmc"]                              # disable ECC (camera-motion comp)
     if probe == "gtdet":
         cmd += ["--weights", str(gtdet_weights), "--gt-dets", str(label_dir)]
     else:
@@ -155,6 +158,9 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--gen-workers", type=int, default=32,
                     help="parallel processes for augment generation (CPU-bound)")
+    ap.add_argument("--no-cmc", action="store_true",
+                    help="disable ECC camera-motion compensation (~3x faster; matches the "
+                         "ECC-off+TRT real-time deployment config)")
     ap.add_argument("--cleanup-aug", action="store_true",
                     help="delete each condition's augmented videos after inference "
                          "(keeps GT + MOT); bounds disk for large eval sets")
@@ -209,7 +215,8 @@ def main():
             print(f"[{probe}] {cond_name}", flush=True)
             try:
                 mot_dir = run_inference(probe, vdir, ldir, out_dir, ROOT / args.reid,
-                                        ROOT / args.det_weights, ROOT / args.gtdet_weights, expected)
+                                        ROOT / args.det_weights, ROOT / args.gtdet_weights,
+                                        expected, args.no_cmc)
                 rows = score(ldir, mot_dir)
             except Exception as e:
                 print(f"    !! {probe} {cond_name} FAILED: {e} (see {out_dir/'infer.log'}); continuing", flush=True)
