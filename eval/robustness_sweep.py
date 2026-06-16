@@ -28,6 +28,54 @@ from eval_tracking import load_mot, evaluate_sequence_custom  # noqa: E402
 
 FOCUS_METRICS = ["Recall", "Precision", "IDF1", "IDsw", "MOTA", "HOTA"]
 
+GLOSSARY = """\
+## How to read this report
+
+**Two probes (the core design — they isolate different failure modes):**
+- **`gtdet`** — ground-truth boxes are fed to the tracker *as detections* (the detector is
+  bypassed). This isolates **tracking / ReID** ability: detection is perfect (Recall ~1.0 by
+  construction), so any error is pure identity/association. Best-frame gallery is meaningless
+  here (uniform confidence).
+- **`yolo`** — the real YOLOv26 detector runs on the (possibly degraded) frame. This measures
+  end-to-end / **detector** robustness.
+
+**Severity:** 0 = clean (no corruption); higher = stronger. `grayscale`/`invert` are binary
+(reported at a single level). Camera **shake** also warps the GT boxes by the same transform.
+
+**Detector class handling (yolo only):** before scoring, `head`/`torso` predictions are
+dropped and thermal classes are mapped to their RGB base, so detections match the
+boat/human/motor GT. (Without this, head+torso are ~26k structural false positives that crush
+precision.)
+
+**Config:** ECC camera-motion compensation is **OFF** (matches the real-time TRT deployment;
+verified to not change accuracy on these near-static-camera clips). ReID = OSNet (TensorRT).
+GT is **partially labelled** (not every boat/person is annotated) — this is why *Recall* is the
+trustworthy headline and *Precision/MOTA* must be read with caution.
+
+**Metrics:**
+- **Recall** = TP / (TP+FN): fraction of GT boxes found. **Most trustworthy here** — extra
+  detections can't lower it, so partial GT doesn't bias it. Headline for the detector.
+- **Precision** = TP / (TP+FP): *depressed by partial GT* (real-but-unlabelled boats count as
+  false positives). Treat as soft, not comparable to literature.
+- **IDF1** = identity F1 via a **global 1-to-1 match** of each GT track to the predicted ID it
+  overlaps most across the whole clip. Measures how consistently the *correct* identity is held.
+  A track that swaps ID once but keeps the new ID for most of the clip is mostly counted
+  **correct** — only the shorter (pre-swap) segment is penalized. Headline for identity.
+- **IDsw** = ID switches: counted **once** each time a GT track's matched prediction ID changes
+  between consecutive frames. A sustained swap = 1 (not re-counted per frame). High on `yolo`
+  mostly reflects **detection dropouts** (object buried by a wave → track dies → reappears with
+  a new ID), *not* tracker association — compare with the much lower `gtdet` IDsw.
+- **MOTA** = 1 − (FN+FP+IDsw)/GT: overall error rate; can go **negative** when FP is high
+  (inflated here by partial GT). Soft metric.
+- **HOTA** = geometric mean of detection accuracy (DetA) and association accuracy (AssA); a
+  balanced single number, less sensitive to the FP/partial-GT issue than MOTA.
+- **Frag** = track fragmentations (times a GT track's coverage is interrupted).
+
+**Bottom line:** trust **Recall** (detection robustness) and **IDF1 / HOTA** (identity
+robustness); read **Precision / MOTA** as soft (partial GT); **IDsw** counts events and on
+`yolo` is dominated by detection dropouts, not association errors.
+"""
+
 # Binary corruptions (no severity ladder) — run once.
 BINARY_KINDS = {"grayscale", "invert"}
 
@@ -250,7 +298,9 @@ def main():
     # ---- write markdown summary (metric vs severity per kind/probe) ----
     md = ["# Corruption-robustness sweep\n",
           f"Probes: {args.probes} | kinds: {args.kinds} | severities: {[0]+args.sevs} "
-          f"(0 = clean) | ReID: {Path(args.reid).name}\n"]
+          f"(0 = clean) | ReID: {Path(args.reid).name} | "
+          f"ECC: {'off' if args.no_cmc else 'on'}\n",
+          GLOSSARY]
     for probe in args.probes:
         focus = ["Recall", "Precision"] if probe == "yolo" else ["IDF1", "MOTA", "IDsw", "HOTA"]
         md.append(f"\n## Probe: {probe}  (metrics: {', '.join(focus)})\n")
