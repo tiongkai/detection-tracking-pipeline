@@ -145,7 +145,7 @@ def ensure_generated(kind, sev, videos, labels, aug_root, seed, workers=32):
 
 
 def run_inference(probe, video_dir, label_dir, out_dir, reid, det_weights, gtdet_weights,
-                  expected, no_cmc=False):
+                  expected, no_cmc=False, gallery="fifo"):
     """Run track_video_predict for one probe. Clip-level resume: skip only when all
     `expected` clips already have MOT; otherwise invoke (track_video_predict itself
     skips per-clip via its timing CSV, so partial conditions resume cleanly)."""
@@ -157,7 +157,8 @@ def run_inference(probe, video_dir, label_dir, out_dir, reid, det_weights, gtdet
         return mot_dir
     cmd = [sys.executable, str(ROOT / "track" / "track_video_predict.py"),
            "--source", str(video_dir), "--out", str(out_dir),
-           "--reid-weights", str(reid), "--save-mot", "--no-video"]
+           "--reid-weights", str(reid), "--reid-gallery", gallery,
+           "--save-mot", "--no-video"]
     if no_cmc:
         cmd += ["--no-cmc"]                              # disable ECC (camera-motion comp)
     if probe == "gtdet":
@@ -204,6 +205,9 @@ def main():
     ap.add_argument("--det-weights", default="weights/best.engine")
     ap.add_argument("--gtdet-weights", default="weights/best.pt")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--gallery", default="fifo", choices=["fifo", "best"],
+                    help="ReID gallery policy (best = top-confidence frames). Meaningful "
+                         "only for the yolo probe (gtdet feeds uniform conf).")
     ap.add_argument("--gen-workers", type=int, default=32,
                     help="parallel processes for augment generation (CPU-bound)")
     ap.add_argument("--no-cmc", action="store_true",
@@ -264,7 +268,7 @@ def main():
             try:
                 mot_dir = run_inference(probe, vdir, ldir, out_dir, ROOT / args.reid,
                                         ROOT / args.det_weights, ROOT / args.gtdet_weights,
-                                        expected, args.no_cmc)
+                                        expected, args.no_cmc, args.gallery)
                 rows = score(ldir, mot_dir)
             except Exception as e:
                 print(f"    !! {probe} {cond_name} FAILED: {e} (see {out_dir/'infer.log'}); continuing", flush=True)
