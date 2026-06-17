@@ -12,9 +12,9 @@ import argparse
 import csv
 from pathlib import Path
 
-# display order of conditions (clean first)
-COND_ORDER = ["clean", "lowlight_s2", "lowlight_s4", "jpeg_s2", "jpeg_s4",
-              "shake_s2", "shake_s4", "grayscale_s1", "invert_s1"]
+# corruption groups: each is shown with the clean baseline first, then its severities
+KIND_GROUPS = [("lowlight", [2, 4]), ("jpeg", [2, 4]), ("shake", [2, 4]),
+               ("grayscale", [1]), ("invert", [1])]
 INT_COLS = {"TP", "FP", "FN", "IDsw", "Frag", "MT", "ML", "PT", "GT_tracks",
             "IDTP", "IDFP", "IDFN"}
 # column display order (identity-ish first, then detection counts)
@@ -28,11 +28,6 @@ GLOSSARY_NOTE = (
     "events (high on yolo = detection dropouts). `gtdet` = perfect boxes (isolates tracking/"
     "ReID); `yolo` = real detector. See summary.md for full glossary.\n"
 )
-
-
-def cond_key(kind, sev):
-    name = "clean" if kind == "clean" else f"{kind}_s{sev}"
-    return name, (COND_ORDER.index(name) if name in COND_ORDER else 99)
 
 
 def fmt(col, v):
@@ -56,27 +51,37 @@ def main():
     all_cols = rows[0].keys() if rows else []
     metrics = [m for m in METRIC_ORDER if m in all_cols]
 
-    by_clip = {}
+    # index: (clip, probe, condname) -> row ; condname is "clean" or "<kind>_s<sev>"
+    idx = {}
+    clips, probes = set(), set()
     for r in rows:
-        name, order = cond_key(r["kind"], r["severity"])
-        by_clip.setdefault(r["clip"], []).append((r["probe"], name, order, r))
+        name = "clean" if r["kind"] == "clean" else f"{r['kind']}_s{r['severity']}"
+        idx[(r["clip"], r["probe"], name)] = r
+        clips.add(r["clip"]); probes.add(r["probe"])
+    probes = [p for p in ("gtdet", "yolo") if p in probes]
 
     md = ["# Per-video metric report\n",
-          f"{len(by_clip)} videos · {len(metrics)} metrics · probes gtdet/yolo "
-          f"· conditions: {', '.join(COND_ORDER)}\n", GLOSSARY_NOTE]
+          f"{len(clips)} videos · each corruption shown with its clean baseline "
+          f"(severity 0)\n", GLOSSARY_NOTE]
 
-    for clip in sorted(by_clip):
+    for clip in sorted(clips):
         md.append(f"\n## {clip}\n")
-        md.append("| probe | condition | " + " | ".join(metrics) + " |")
-        md.append("|---|---|" + "---|" * len(metrics))
-        entries = sorted(by_clip[clip], key=lambda e: (e[0], e[2]))
-        for probe, name, _, r in entries:
-            cells = [fmt(m, r.get(m, "")) for m in metrics]
-            md.append(f"| {probe} | {name} | " + " | ".join(cells) + " |")
+        for probe in probes:
+            md.append(f"\n### {probe}\n")
+            for kind, sevs in KIND_GROUPS:
+                md.append(f"\n**{kind}**\n")
+                md.append("| severity | " + " | ".join(metrics) + " |")
+                md.append("|---|" + "---|" * len(metrics))
+                for label, cond in [("clean (0)", "clean")] + [(str(s), f"{kind}_s{s}") for s in sevs]:
+                    r = idx.get((clip, probe, cond))
+                    if not r:
+                        continue
+                    cells = [fmt(m, r.get(m, "")) for m in metrics]
+                    md.append(f"| {label} | " + " | ".join(cells) + " |")
 
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text("\n".join(md) + "\n")
-    print(f"{len(by_clip)} videos -> {args.out}")
+    print(f"{len(clips)} videos -> {args.out}")
 
 
 if __name__ == "__main__":
