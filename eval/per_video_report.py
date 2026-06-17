@@ -14,7 +14,7 @@ from pathlib import Path
 
 # corruption groups: each is shown with the clean baseline first, then its severities
 KIND_GROUPS = [("lowlight", [2, 4]), ("jpeg", [2, 4]), ("shake", [2, 4]),
-               ("grayscale", [1]), ("invert", [1])]
+               ("grayscale", [1]), ("invert", [1]), ("grayscale_invert", [1])]
 INT_COLS = {"TP", "FP", "FN", "IDsw", "Frag", "MT", "ML", "PT", "GT_tracks",
             "IDTP", "IDFP", "IDFN"}
 # column display order (identity-ish first, then detection counts)

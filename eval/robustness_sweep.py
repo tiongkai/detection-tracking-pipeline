@@ -77,7 +77,7 @@ robustness); read **Precision / MOTA** as soft (partial GT); **IDsw** counts eve
 """
 
 # Binary corruptions (no severity ladder) — run once.
-BINARY_KINDS = {"grayscale", "invert"}
+BINARY_KINDS = {"grayscale", "invert", "grayscale_invert"}
 
 # Detector-class normalization for scoring (per user): ignore head & torso
 # (rgb 4,5 + thermal 10,11), and map thermal detections to their rgb base

@@ -36,7 +36,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-KINDS = ["lowlight", "grayscale", "invert", "jpeg", "motion_blur",
+KINDS = ["lowlight", "grayscale", "invert", "grayscale_invert", "jpeg", "motion_blur",
          "defocus", "contrast", "fog", "shake"]
 
 # ---- geometry-preserving corruptions -------------------------------------------------
@@ -57,7 +57,13 @@ def _grayscale(img, sev, rng):
 
 
 def _invert(img, sev, rng):
-    return 255 - img
+    return 255 - img                                    # colour negative (per-channel)
+
+
+def _grayscale_invert(img, sev, rng):
+    # grayscale then invert: black/white negative (monochrome, thermal-like)
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    return cv2.cvtColor(255 - g, cv2.COLOR_GRAY2BGR)
 
 
 def _jpeg(img, sev, rng):
@@ -96,6 +102,7 @@ def _fog(img, sev, rng):
 
 _GEOM_PRESERVING = {
     "lowlight": _lowlight, "grayscale": _grayscale, "invert": _invert,
+    "grayscale_invert": _grayscale_invert,
     "jpeg": _jpeg, "motion_blur": _motion_blur, "defocus": _defocus,
     "contrast": _contrast, "fog": _fog,
 }

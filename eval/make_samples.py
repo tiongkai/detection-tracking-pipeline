@@ -26,7 +26,7 @@ def main():
     ap.add_argument("--labels", default="eval_videos/wavy-boats/labels")
     ap.add_argument("--out", default="eval_videos/wavy-boats/aug_samples")
     ap.add_argument("--kinds", nargs="+",
-                    default=["lowlight", "jpeg", "shake", "grayscale", "invert"])
+                    default=["lowlight", "jpeg", "shake", "grayscale", "invert", "grayscale_invert"])
     ap.add_argument("--sevs", nargs="+", type=int, default=[2, 4])
     ap.add_argument("--n", type=int, default=10, help="clips per corruption")
     ap.add_argument("--seed", type=int, default=0)
