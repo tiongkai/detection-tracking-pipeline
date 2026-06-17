@@ -66,18 +66,17 @@ def main():
 
     for clip in sorted(clips):
         md.append(f"\n## {clip}\n")
-        for probe in probes:
-            md.append(f"\n### {probe}\n")
-            for kind, sevs in KIND_GROUPS:
-                md.append(f"\n**{kind}**\n")
-                md.append("| severity | " + " | ".join(metrics) + " |")
-                md.append("|---|" + "---|" * len(metrics))
-                for label, cond in [("clean (0)", "clean")] + [(str(s), f"{kind}_s{s}") for s in sevs]:
+        for kind, sevs in KIND_GROUPS:
+            md.append(f"\n### {kind}\n")
+            md.append("| condition | probe | " + " | ".join(metrics) + " |")
+            md.append("|---|---|" + "---|" * len(metrics))
+            for label, cond in [("clean", "clean")] + [(f"{kind}_s{s}", f"{kind}_s{s}") for s in sevs]:
+                for probe in probes:                     # gtdet then yolo, stacked
                     r = idx.get((clip, probe, cond))
                     if not r:
                         continue
                     cells = [fmt(m, r.get(m, "")) for m in metrics]
-                    md.append(f"| {label} | " + " | ".join(cells) + " |")
+                    md.append(f"| {label} | {probe} | " + " | ".join(cells) + " |")
 
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text("\n".join(md) + "\n")
