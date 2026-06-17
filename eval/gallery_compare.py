@@ -48,6 +48,7 @@ def run_best(videos, out, reid, det_weights, k, div):
            "--weights", str(det_weights), "--source", str(videos), "--out", str(out),
            "--reid-weights", str(reid), "--reid-gallery", "best",
            "--gallery-k", str(k), "--gallery-diversity", str(div),
+           "--no-cmc",                                  # match the ECC-off fifo baseline
            "--save-mot", "--no-video"]
     print("best: running...", flush=True)
     Path(out).mkdir(parents=True, exist_ok=True)
