@@ -1,90 +1,75 @@
 # Pending tasks
 
-Living task list for the detection-tracking pipeline. (`task.md` is the older
-intern MOT-metrics task list — kept for history; this file tracks current work.)
+Living task list for the detection-tracking pipeline. (`task.md` is the older intern
+MOT-metrics list — kept for history.) Branch: `dev/degradation-eval`.
 
 Legend: 🔴 blocked · 🟡 ready · 🟢 in progress · ✅ done
 
 ---
 
-## Active / ready
+## Active / prioritized
 
-### 🟢 Degradation-robustness eval — build (branch `dev/degradation-eval`)
-Design: `docs/degradation_eval_design.md`. Working eval set: `eval_videos/wavy-boats/`
-(4 Haulover clips, 1080p/60fps, MOT GT in `labels/`, classes 0=boat 2=human).
-- [x] Annotated GT videos rendered → `results/wavy_boats_gt/` (via `visualize_gt.py --flat`).
-- [x] **GT-as-detections mode** — `track_video_predict.py --gt-dets <labels-dir>`: feeds GT
-      boxes as detections (YOLO bypassed), ReID still runs on image crops → isolates pure
-      tracking/ReID ability. Smoke (seg1): boat + 2 humans held perfectly; **2 humans
-      (GT 2 & 4) swap IDs even with perfect boxes** → pure ReID/association failure.
-- [ ] Run GT-dets on all 4 clips + proper IDF1/HOTA via `eval/eval_tracking.py`.
-- [x] `eval/degrade.py` — **standalone data generator** (decoupled from inference, per
-      user pref: track_video_predict.py stays pure inference). Writes augmented videos +
-      GT to `eval_videos/wavy-boats/aug/<kind>_s<sev>/{videos,labels}/`. Geometry-preserving
-      kinds (lowlight, grayscale, invert, jpeg, motion_blur, defocus, contrast, fog)
-      re-emit GT unchanged; **shake** affine-warps frame + GT together. Seeded/deterministic.
-      Smoke-tested on seg1 (lowlight/jpeg/shake); shake GT alignment verified.
-- [ ] Generate the full augment set (all kinds × severities) over the 4 wavy-boats clips.
-- [ ] `eval/robustness_sweep.py` — drive: generate (degrade.py) → infer (track_video_predict)
-      → score (eval_tracking) across the matrix → degradation curves + tables.
-- [ ] Two probes: (a) **YOLO on degraded** = detector robustness; (b) **GT-dets on degraded
-      video** (`--gt-dets`) = tracker/ReID robustness in isolation.
-- [ ] Headline run: **camera shake × {ECC on, ECC off}**; cross-cut: grayscale/invert × ID retention.
-- **Needs from user:** realistic severity anchors — live-stream **bitrate/codec** (for
-      compression) and ideally a real **dusk/night** reference (for low-light).
+### 🟡 Best-frame ReID on AUGMENTED data (NEXT — user-prioritized)
+Clean-only gallery test showed best ≈ fifo (no gain). Hypothesis: best-frame helps where
+frame quality *varies* (degraded conditions with intermittent clear frames). `--gallery`
+passthrough is wired into `robustness_sweep.py`.
+- [ ] Run yolo + `--gallery best` across all conditions → `results/robustness_gallery_best/`
+      (regenerates aug, ECC-off). Compare to existing fifo (`results/robustness_all/yolo`).
+- [ ] Per-condition + per-target fifo-vs-best table; decide if best-frame is worth adopting.
 
-### 🟡 OSNet ReID swap (inference speed)
-CLIP ReID (`clip_veri.pt`, 483 MB) is the live-inference bottleneck; OSNet
-(`osnet_x0_25_msmt17.pt`, 3 MB) swap planned to hit the 20 FPS target.
-- [ ] Run pipeline with `--reid-weights osnet_x0_25_msmt17.pt`, measure FPS gain.
-- [ ] Re-eval tracking metrics (IDF1/IDsw) — confirm identity quality holds vs CLIP.
+### 🟢 grayscale_invert corruption (running)
+New binary corruption (grayscale→invert, B/W negative; distinct from colour `invert`).
+- [x] Added to degrade.py / sweep / per_video_report / make_samples.
+- [🟢] Sweep run in progress (gtdet done-ish, yolo next), rewrites summary.md.
+- [ ] Regenerate downstream reports (per_video, per_target ×2, kalman, 10 samples) + recopy docs.
+
+---
+
+## Open follow-ups (degradation study)
+
+### 🟡 shake × ECC-on
+KF coasting helps least under shake (+4pp) — does ECC camera-motion-comp rescue it?
+- [ ] Re-run shake s2/s4 with ECC ON (no `--no-cmc`), compare vs ECC-off shake.
+
+### 🟡 Re-split GT across all conditions (fair-identity)
+resplit@180 gave +2.6pp gtdet IDF1 on clean only. `eval/resplit_gt.py` ready.
+- [ ] Re-score all conditions vs `labels_resplit180` → fair-identity column in reports.
+- **Decision pending:** make re-split the primary reports, or keep as side experiment?
+
+### 🟡 Severity anchoring (deferred)
+- [ ] Anchor compression to real stream bitrate/codec; low-light to a dusk reference.
+      (Needs inputs from user.)
+
+---
+
+## Other project tasks
+
+### 🟡 OSNet ReID swap — re-eval on main pipeline
+OSNet-TRT is already used in the degradation sweeps (fast). Still to do for the live pipeline:
+- [ ] Confirm FPS + IDF1/IDsw on the production eval set vs CLIP; adopt if identity holds.
 - See memory `project_inference_optimization.md`.
 
----
-
-## Blocked (awaiting inputs)
-
-### 🔴 Best-frame ReID gallery evaluation (fifo vs best)
-Feature built + pushed on `dev/best-frame-reid` (`track/hybridsort_bestframe.py`,
-`--reid-gallery best --gallery-k --gallery-diversity`). Paused by user pending new eval set.
-- [ ] Run `--reid-gallery fifo` vs `best` on the eval set; compare IDF1 / IDsw / Frag.
-- [ ] If best-frame wins → merge `dev/best-frame-reid` → `main`.
-- **Blocked on:** the new eval set (ideally the 1–2 s wave-occlusion clips below).
-
 ### 🔴 SAM3 hybrid re-acquisition
-Plan written on `dev/sam3-hybrid-reacquisition` (`docs/sam3_hybrid_reacquisition_plan.md`).
-- [ ] **De-risk experiment (run FIRST):** best-frame ReID vs SAM3 on real occlusion clips.
-      Decision gate — if ReID recovers the occlusions, skip SAM3 entirely.
-- [ ] Only past the gate: build async SAM3 oracle + reconciliation layer.
-- **Blocked on:** a test set of **real 1–2 s wave-occlusion clips with GT IDs through the gap.**
+Plan on `dev/sam3-hybrid-reacquisition`. Degradation study supports it: under shake the KF
+motion model fails (appearance/SAM3 needed).
+- [ ] De-risk: best-frame ReID vs SAM3 on real 1–2 s wave-occlusion clips (gate before building).
+- **Blocked on:** occlusion test set with GT IDs through the gap.
 
 ### 🔴 GT pre-annotation — full run
-Pre-label a new eval set (boats / people / outboard motors), keeping only tracks of
-"boats of interest" (people/motors only if on those boats). 1 clip sanity-tested OK.
-- [ ] Full run on `wavy-boats` 1080p via `configs/gt_preannotate.yaml`.
-- [ ] Curation tooling: boat-of-interest selection + spatial association of people/motors.
-- See `youtube-annotation/annotator/` (SAM3 pre-annotation).
+- [ ] Full pre-label run; boat-of-interest curation tooling. See `youtube-annotation/annotator/`.
 
----
-
-## Housekeeping
-
-### 🟡 Branch consolidation
-Repo is now a single git-tracked dir (`detection-tracking-pipeline-local`). Branch state:
-- `dev/resolve-inference-bottleneck`, `dev/decouple-detection-clean` — merged into `main`
-  (stale; can be deleted once confirmed).
-- `dev/best-frame-reid` — +2 ahead (gallery feature + repo consolidation). Merge after eval.
-- `dev/sam3-hybrid-reacquisition` — +1 (plan doc only). Merge/keep as needed.
-- [ ] After best-frame eval: merge to `main`, delete stale branches.
+### 🟡 Branch cleanup / merge
+- [ ] Merge `dev/degradation-eval` → `main` once study is wrapped.
+- [ ] Decide fate of `dev/best-frame-reid` (merged into main already), `dev/sam3-hybrid-reacquisition`.
 
 ---
 
 ## Done
-- ✅ Repo consolidation — single git-tracked working tree; `-git` clone retired; artifacts
-      gitignored (on `dev/best-frame-reid`).
-- ✅ Inference bottleneck — ECC-off + TensorRT → 45.5 FPS (2.2×), no accuracy loss.
-- ✅ Model conversion tooling — `export/export_onnx.py`, `export/build_tensorrt.py` + README.
-- ✅ Recall headroom sweep (conf × max_coast) — `eval/sweep_recall.py`.
-- ✅ SAM3 speed/feasibility study — ~3.8 FPS, sequential, not real-time; encoder-only TRT.
-- ✅ Per-frame timing instrumentation (detection / tracking / ReID / total).
-- ✅ GT validation + MOT-format export + visualizer.
+- ✅ **Degradation-robustness study** — 32 clips × 9 corruptions × 2 probes (gtdet/yolo),
+  ECC-off+TRT. Reports in `docs/degradation_eval_reports/` (FINDINGS, summary, per_video,
+  per_target ×18, kalman, gallery-clean, gt_dataset, per_video_insights, metrics.csv).
+  Tooling: degrade.py, robustness_sweep.py, per_video_report.py, per_target_breakdown.py,
+  kalman_contribution.py, gallery_compare.py, resplit_gt.py, gt_dataset_report.py, make_samples.py.
+- ✅ GT-as-detections mode (`--gt-dets`), annotated GT videos (32), flat-layout `visualize_gt`.
+- ✅ Repo consolidation (single git repo); inference bottleneck (ECC-off+TRT 45.5 FPS);
+  model conversion tooling; recall headroom sweep; SAM3 speed study; timing instrumentation.
