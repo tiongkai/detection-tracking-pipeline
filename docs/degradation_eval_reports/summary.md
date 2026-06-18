@@ -1,6 +1,6 @@
 # Corruption-robustness sweep
 
-Probes: ['gtdet', 'yolo'] | kinds: ['lowlight', 'jpeg', 'shake', 'grayscale', 'invert'] | severities: [0, 2, 4] (0 = clean) | ReID: osnet_x0_25_msmt17.engine
+Probes: ['gtdet', 'yolo'] | kinds: ['lowlight', 'jpeg', 'shake', 'grayscale', 'invert', 'grayscale_invert'] | severities: [0, 2, 4] (0 = clean) | ReID: osnet_x0_25_msmt17.engine | ECC: off
 
 ## How to read this report
 
@@ -49,7 +49,6 @@ robustness); read **Precision / MOTA** as soft (partial GT); **IDsw** counts eve
 `yolo` is dominated by detection dropouts, not association errors.
 
 
-
 ## Probe: gtdet  (metrics: IDF1, MOTA, IDsw, HOTA)
 
 
@@ -91,6 +90,13 @@ robustness); read **Precision / MOTA** as soft (partial GT); **IDsw** counts eve
 | 0 | 0.853 | 0.967 | 9.219 | 0.875 |
 | 1 | 0.847 | 0.967 | 9.812 | 0.870 |
 
+### grayscale_invert
+
+| severity | IDF1 | MOTA | IDsw | HOTA |
+|---|---|---|---|---|
+| 0 | 0.853 | 0.967 | 9.219 | 0.875 |
+| 1 | 0.848 | 0.966 | 11.625 | 0.868 |
+
 ## Probe: yolo  (metrics: Recall, Precision)
 
 
@@ -131,3 +137,10 @@ robustness); read **Precision / MOTA** as soft (partial GT); **IDsw** counts eve
 |---|---|---|
 | 0 | 0.669 | 0.591 |
 | 1 | 0.605 | 0.593 |
+
+### grayscale_invert
+
+| severity | Recall | Precision |
+|---|---|---|
+| 0 | 0.669 | 0.591 |
+| 1 | 0.640 | 0.593 |
