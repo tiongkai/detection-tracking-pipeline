@@ -7,21 +7,17 @@ Legend: 🔴 blocked · 🟡 ready · 🟢 in progress · ✅ done
 
 ---
 
-## Active / prioritized
+## Recently done
 
-### 🟡 Best-frame ReID on AUGMENTED data (NEXT — user-prioritized)
-Clean-only gallery test showed best ≈ fifo (no gain). Hypothesis: best-frame helps where
-frame quality *varies* (degraded conditions with intermittent clear frames). `--gallery`
-passthrough is wired into `robustness_sweep.py`.
-- [ ] Run yolo + `--gallery best` across all conditions → `results/robustness_gallery_best/`
-      (regenerates aug, ECC-off). Compare to existing fifo (`results/robustness_all/yolo`).
-- [ ] Per-condition + per-target fifo-vs-best table; decide if best-frame is worth adopting.
+### ✅ Best-frame ReID on AUGMENTED data — NO benefit (verdict)
+Ran yolo + `--gallery best` across all conditions vs fifo → `gallery_best_vs_fifo_augmented.md`.
+**Neutral-to-slightly-negative in every condition** (incl degraded; worst shake_s2 IDF1 −0.010).
+Failures here are detection dropouts + similar-human ambiguity, not stale gallery frames.
+**Don't adopt best-frame for this use case.** Long-paused fifo-vs-best evaluation settled (negative).
 
-### 🟢 grayscale_invert corruption (running)
-New binary corruption (grayscale→invert, B/W negative; distinct from colour `invert`).
-- [x] Added to degrade.py / sweep / per_video_report / make_samples.
-- [🟢] Sweep run in progress (gtdet done-ish, yolo next), rewrites summary.md.
-- [ ] Regenerate downstream reports (per_video, per_target ×2, kalman, 10 samples) + recopy docs.
+### ✅ grayscale_invert corruption
+Added (B/W negative). Detection ≈ grayscale (recall 0.64) but no IDsw flicker (60 vs colour-
+invert 210); tracking gentler than grayscale (IDF1 0.848). All reports + 10 samples done.
 
 ---
 
